@@ -18,6 +18,17 @@ export interface NmfData {
   survivalData?: SurvivalDataPoint[];
 }
 
+// Raw JSON format (may use different field names)
+interface RawNmfData {
+  summary: NmfSummary;
+  samples?: SampleResult[];
+  sampleResults?: SampleResult[];
+  markerGenes: MarkerGene[];
+  heatmapData?: NmfData['heatmapData'];
+  rankMetrics?: RankMetric[];
+  survivalData?: SurvivalDataPoint[];
+}
+
 interface JsonUploaderProps {
   onDataLoaded: (data: NmfData) => void;
 }
@@ -29,36 +40,45 @@ export const JsonUploader = ({ onDataLoaded }: JsonUploaderProps) => {
   const [message, setMessage] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
 
-  const validateData = (data: unknown): data is NmfData => {
-    if (!data || typeof data !== "object") return false;
-    const d = data as Record<string, unknown>;
+  const validateAndNormalize = (data: unknown): NmfData | null => {
+    if (!data || typeof data !== "object") return null;
+    const d = data as RawNmfData;
     
-    // Check for required fields
-    if (!d.summary || !d.samples || !d.markerGenes) return false;
+    // Check for required fields (accept both 'samples' and 'sampleResults')
+    const samples = d.samples || d.sampleResults;
+    if (!d.summary || !samples || !d.markerGenes) return null;
     
     // Validate summary structure
-    const summary = d.summary as Record<string, unknown>;
+    const summary = d.summary as unknown as Record<string, unknown>;
     if (
       typeof summary.n_samples !== "number" ||
       typeof summary.n_subtypes !== "number" ||
       !summary.subtype_counts
     ) {
-      return false;
+      return null;
     }
     
     // Validate samples array
-    if (!Array.isArray(d.samples) || d.samples.length === 0) return false;
+    if (!Array.isArray(samples) || samples.length === 0) return null;
     
     // Validate markerGenes array
-    if (!Array.isArray(d.markerGenes)) return false;
+    if (!Array.isArray(d.markerGenes)) return null;
     
     // Optional: validate rankMetrics if present
-    if (d.rankMetrics && !Array.isArray(d.rankMetrics)) return false;
+    if (d.rankMetrics && !Array.isArray(d.rankMetrics)) return null;
     
     // Optional: validate survivalData if present
-    if (d.survivalData && !Array.isArray(d.survivalData)) return false;
+    if (d.survivalData && !Array.isArray(d.survivalData)) return null;
     
-    return true;
+    // Return normalized data with consistent field names
+    return {
+      summary: d.summary,
+      samples: samples,
+      markerGenes: d.markerGenes,
+      heatmapData: d.heatmapData,
+      rankMetrics: d.rankMetrics,
+      survivalData: d.survivalData,
+    };
   };
 
   const processFile = useCallback(async (file: File) => {
@@ -70,23 +90,24 @@ export const JsonUploader = ({ onDataLoaded }: JsonUploaderProps) => {
 
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
+      const rawData = JSON.parse(text);
       
-      if (!validateData(data)) {
+      const normalizedData = validateAndNormalize(rawData);
+      if (!normalizedData) {
         setStatus("error");
-        setMessage("Invalid NMF data format. Expected: summary, samples, markerGenes");
+        setMessage("Invalid NMF data format. Expected: summary, samples (or sampleResults), markerGenes");
         return;
       }
 
-      onDataLoaded(data);
+      onDataLoaded(normalizedData);
       setStatus("success");
       
       const features = [];
-      if (data.rankMetrics) features.push("rank metrics");
-      if (data.survivalData) features.push("survival data");
+      if (normalizedData.rankMetrics) features.push("rank metrics");
+      if (normalizedData.survivalData) features.push("survival data");
       const featuresStr = features.length > 0 ? ` (includes ${features.join(", ")})` : "";
       
-      setMessage(`Loaded ${data.summary.n_samples} samples with ${data.summary.n_subtypes} subtypes${featuresStr}`);
+      setMessage(`Loaded ${normalizedData.summary.n_samples} samples with ${normalizedData.summary.n_subtypes} subtypes${featuresStr}`);
     } catch (err) {
       setStatus("error");
       setMessage("Failed to parse JSON file");
