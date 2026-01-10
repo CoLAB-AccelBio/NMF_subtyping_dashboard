@@ -12,9 +12,27 @@ export const MarkerGenesTable = ({ genes, subtypeColors }: MarkerGenesTableProps
   const [selectedSubtype, setSelectedSubtype] = useState<string | null>(null);
   
   const subtypes = [...new Set(genes.map(g => g.subtype))].sort();
+  
+  // When no filter is selected, show top genes from ALL subtypes (balanced representation)
   const filteredGenes = selectedSubtype 
     ? genes.filter(g => g.subtype === selectedSubtype)
-    : genes;
+    : (() => {
+        // Get top genes from each subtype for balanced display
+        const genesBySubtype = subtypes.map(subtype => 
+          genes.filter(g => g.subtype === subtype).slice(0, Math.ceil(20 / subtypes.length))
+        );
+        // Interleave genes from different subtypes and limit to 20
+        const interleaved: typeof genes = [];
+        const maxPerSubtype = Math.max(...genesBySubtype.map(arr => arr.length));
+        for (let i = 0; i < maxPerSubtype; i++) {
+          for (const subtypeGenes of genesBySubtype) {
+            if (subtypeGenes[i]) {
+              interleaved.push(subtypeGenes[i]);
+            }
+          }
+        }
+        return interleaved.slice(0, 20);
+      })();
 
   return (
     <Card className="border-0 bg-card/50 backdrop-blur-sm">
