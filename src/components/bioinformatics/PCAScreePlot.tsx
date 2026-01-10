@@ -1,21 +1,38 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Line, ComposedChart, ReferenceLine } from "recharts";
-import { SampleResult } from "@/data/mockNmfData";
 import { useMemo, useRef } from "react";
 import { Download } from "lucide-react";
 import { downloadChartAsPNG } from "@/lib/chartExport";
 
-interface PCAScreePlotProps {
-  samples: SampleResult[];
+interface HeatmapData {
+  genes: string[];
+  samples: string[];
+  sampleSubtypes: string[];
+  values: number[][];
 }
 
-// Compute all principal components variance
-const computeAllPCAVariance = (data: number[][]): { variances: number[]; cumulative: number[] } => {
-  if (data.length === 0) return { variances: [], cumulative: [] };
+interface PCAScreePlotProps {
+  heatmapData: HeatmapData;
+}
 
-  const n = data.length;
-  const m = data[0].length;
+// Compute all principal components variance using SVD-like approach on gene expression data
+// For samples x genes matrix, number of PCs = min(samples, genes)
+const computeAllPCAVariance = (values: number[][], nGenes: number, nSamples: number): { variances: number[]; cumulative: number[] } => {
+  if (nSamples === 0 || nGenes === 0) return { variances: [], cumulative: [] };
+
+  // Transpose to get samples as rows (samples x genes)
+  const data: number[][] = [];
+  for (let s = 0; s < nSamples; s++) {
+    const row: number[] = [];
+    for (let g = 0; g < nGenes; g++) {
+      row.push(values[g][s]);
+    }
+    data.push(row);
+  }
+
+  const n = data.length; // samples
+  const m = data[0].length; // genes
 
   // Center the data
   const means = Array(m).fill(0);
@@ -30,56 +47,117 @@ const computeAllPCAVariance = (data: number[][]): { variances: number[]; cumulat
 
   const centered = data.map(row => row.map((v, j) => v - means[j]));
 
-  // Compute covariance matrix
-  const cov: number[][] = Array(m).fill(null).map(() => Array(m).fill(0));
-  for (let i = 0; i < m; i++) {
-    for (let j = i; j < m; j++) {
-      let sum = 0;
-      for (let k = 0; k < n; k++) {
-        sum += centered[k][i] * centered[k][j];
-      }
-      cov[i][j] = sum / (n - 1);
-      cov[j][i] = cov[i][j];
-    }
-  }
-
-  // Calculate total variance
+  // Compute X^T X / (n-1) - the covariance matrix (m x m)
+  // For efficiency with large m, we compute the Gram matrix X X^T (n x n) instead
+  // The eigenvalues of X X^T / (n-1) are the same as X^T X / (n-1) (for non-zero ones)
+  const useGram = n < m;
+  
+  let eigenvalues: number[] = [];
   let totalVariance = 0;
-  for (let i = 0; i < m; i++) {
-    totalVariance += cov[i][i];
-  }
 
-  // Power iteration for eigenvalues - compute ALL components
-  const eigenvalues: number[] = [];
-  let currentCov = cov.map(row => [...row]);
-
-  for (let pc = 0; pc < m; pc++) {
-    let vector = Array(m).fill(0).map(() => Math.random());
-    let norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
-    vector = vector.map(v => v / norm);
-
-    let eigenvalue = 0;
-    for (let iter = 0; iter < 100; iter++) {
-      const newVector = Array(m).fill(0);
-      for (let i = 0; i < m; i++) {
-        for (let j = 0; j < m; j++) {
-          newVector[i] += currentCov[i][j] * vector[j];
+  if (useGram) {
+    // Compute Gram matrix (n x n): X X^T
+    const gram: number[][] = Array(n).fill(null).map(() => Array(n).fill(0));
+    for (let i = 0; i < n; i++) {
+      for (let j = i; j < n; j++) {
+        let sum = 0;
+        for (let k = 0; k < m; k++) {
+          sum += centered[i][k] * centered[j][k];
         }
+        gram[i][j] = sum / (n - 1);
+        gram[j][i] = gram[i][j];
       }
-      eigenvalue = newVector.reduce((sum, v, i) => sum + v * vector[i], 0);
-      norm = Math.sqrt(newVector.reduce((sum, v) => sum + v * v, 0));
-      if (norm < 1e-10) break;
-      vector = newVector.map(v => v / norm);
     }
 
-    if (eigenvalue > 0.001) {
-      eigenvalues.push(eigenvalue);
-      // Deflate
-      currentCov = currentCov.map((row, i) =>
-        row.map((v, j) => v - eigenvalue * vector[i] * vector[j])
-      );
-    } else {
-      break;
+    // Total variance from Gram matrix trace
+    for (let i = 0; i < n; i++) {
+      totalVariance += gram[i][i];
+    }
+
+    // Power iteration on Gram matrix
+    let currentGram = gram.map(row => [...row]);
+    const maxPCs = Math.min(n, 50); // Limit for performance
+
+    for (let pc = 0; pc < maxPCs; pc++) {
+      let vector = Array(n).fill(0).map(() => Math.random());
+      let norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
+      vector = vector.map(v => v / norm);
+
+      let eigenvalue = 0;
+      for (let iter = 0; iter < 100; iter++) {
+        const newVector = Array(n).fill(0);
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < n; j++) {
+            newVector[i] += currentGram[i][j] * vector[j];
+          }
+        }
+        eigenvalue = newVector.reduce((sum, v, i) => sum + v * vector[i], 0);
+        norm = Math.sqrt(newVector.reduce((sum, v) => sum + v * v, 0));
+        if (norm < 1e-10) break;
+        vector = newVector.map(v => v / norm);
+      }
+
+      if (eigenvalue > 1e-6) {
+        eigenvalues.push(eigenvalue);
+        // Deflate
+        currentGram = currentGram.map((row, i) =>
+          row.map((v, j) => v - eigenvalue * vector[i] * vector[j])
+        );
+      } else {
+        break;
+      }
+    }
+  } else {
+    // Compute covariance matrix (m x m)
+    const cov: number[][] = Array(m).fill(null).map(() => Array(m).fill(0));
+    for (let i = 0; i < m; i++) {
+      for (let j = i; j < m; j++) {
+        let sum = 0;
+        for (let k = 0; k < n; k++) {
+          sum += centered[k][i] * centered[k][j];
+        }
+        cov[i][j] = sum / (n - 1);
+        cov[j][i] = cov[i][j];
+      }
+    }
+
+    // Total variance
+    for (let i = 0; i < m; i++) {
+      totalVariance += cov[i][i];
+    }
+
+    // Power iteration
+    let currentCov = cov.map(row => [...row]);
+    const maxPCs = Math.min(m, 50);
+
+    for (let pc = 0; pc < maxPCs; pc++) {
+      let vector = Array(m).fill(0).map(() => Math.random());
+      let norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
+      vector = vector.map(v => v / norm);
+
+      let eigenvalue = 0;
+      for (let iter = 0; iter < 100; iter++) {
+        const newVector = Array(m).fill(0);
+        for (let i = 0; i < m; i++) {
+          for (let j = 0; j < m; j++) {
+            newVector[i] += currentCov[i][j] * vector[j];
+          }
+        }
+        eigenvalue = newVector.reduce((sum, v, i) => sum + v * vector[i], 0);
+        norm = Math.sqrt(newVector.reduce((sum, v) => sum + v * v, 0));
+        if (norm < 1e-10) break;
+        vector = newVector.map(v => v / norm);
+      }
+
+      if (eigenvalue > 1e-6) {
+        eigenvalues.push(eigenvalue);
+        // Deflate
+        currentCov = currentCov.map((row, i) =>
+          row.map((v, j) => v - eigenvalue * vector[i] * vector[j])
+        );
+      } else {
+        break;
+      }
     }
   }
 
@@ -88,38 +166,36 @@ const computeAllPCAVariance = (data: number[][]): { variances: number[]; cumulat
   let sum = 0;
   for (const v of variances) {
     sum += v;
-    cumulative.push(sum);
+    cumulative.push(Math.min(sum, 100));
   }
 
   return { variances, cumulative };
 };
 
-export const PCAScreePlot = ({ samples }: PCAScreePlotProps) => {
+export const PCAScreePlot = ({ heatmapData }: PCAScreePlotProps) => {
   const chartRef = useRef<HTMLDivElement>(null);
 
   const chartData = useMemo(() => {
-    const scoreMatrix = samples.map(sample => {
-      const scores: number[] = [];
-      Object.entries(sample).forEach(([key, value]) => {
-        if (key.startsWith("score_") && typeof value === "number") {
-          scores.push(value);
-        }
-      });
-      return scores.length > 0 ? scores : [Math.random(), Math.random(), Math.random()];
-    });
-
-    const { variances, cumulative } = computeAllPCAVariance(scoreMatrix);
+    const { variances, cumulative } = computeAllPCAVariance(
+      heatmapData.values, 
+      heatmapData.genes.length, 
+      heatmapData.samples.length
+    );
 
     return variances.map((variance, idx) => ({
       pc: `PC${idx + 1}`,
+      pcNum: idx + 1,
       variance: variance,
       cumulative: cumulative[idx],
     }));
-  }, [samples]);
+  }, [heatmapData]);
 
   const handleDownload = () => {
     downloadChartAsPNG(chartRef.current, "pca-scree-plot");
   };
+
+  // Find PC where cumulative reaches 80%
+  const pc80 = chartData.findIndex(d => d.cumulative >= 80);
 
   return (
     <Card className="border-0 bg-card/50 backdrop-blur-sm">
@@ -135,11 +211,13 @@ export const PCAScreePlot = ({ samples }: PCAScreePlotProps) => {
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={chartData} margin={{ top: 10, right: 40, bottom: 30, left: 10 }}>
               <XAxis
-                dataKey="pc"
+                dataKey="pcNum"
+                type="number"
+                domain={[1, chartData.length]}
                 tick={{ fontSize: 9 }}
                 tickLine={false}
                 axisLine={{ stroke: "hsl(var(--border))" }}
-                interval={chartData.length > 10 ? Math.floor(chartData.length / 10) : 0}
+                tickFormatter={(v) => `${v}`}
                 label={{ value: "Principal Component", position: "bottom", offset: 10, fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
               />
               <YAxis
@@ -165,11 +243,12 @@ export const PCAScreePlot = ({ samples }: PCAScreePlotProps) => {
                   borderRadius: "8px",
                 }}
                 formatter={(value: number, name: string) => [
-                  `${value.toFixed(1)}%`,
+                  `${value.toFixed(2)}%`,
                   name === "variance" ? "Variance" : "Cumulative"
                 ]}
+                labelFormatter={(label) => `PC${label}`}
               />
-              <Bar yAxisId="left" dataKey="variance" fill="hsl(var(--primary))" radius={[2, 2, 0, 0]}>
+              <Bar yAxisId="left" dataKey="variance" fill="hsl(var(--primary))" radius={[1, 1, 0, 0]}>
                 {chartData.map((_, index) => (
                   <Cell key={`cell-${index}`} fillOpacity={0.8} />
                 ))}
@@ -180,14 +259,16 @@ export const PCAScreePlot = ({ samples }: PCAScreePlotProps) => {
                 dataKey="cumulative"
                 stroke="hsl(var(--destructive))"
                 strokeWidth={2}
-                dot={{ fill: "hsl(var(--destructive))", r: 3 }}
+                dot={false}
               />
               <ReferenceLine yAxisId="right" y={80} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" strokeOpacity={0.5} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
         <p className="text-xs text-center text-muted-foreground mt-2">
-          Dashed line indicates 80% cumulative variance threshold
+          {pc80 >= 0 
+            ? `80% variance explained by first ${pc80 + 1} components (dashed line)`
+            : "Dashed line indicates 80% cumulative variance threshold"}
         </p>
       </CardContent>
     </Card>
