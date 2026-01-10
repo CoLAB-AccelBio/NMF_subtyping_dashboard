@@ -3,12 +3,13 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useMemo, useState, useRef } from "react";
+import { useMemo, useState, useRef, useCallback } from "react";
 import { Download } from "lucide-react";
 import { AnnotationSelector } from "./AnnotationSelector";
 import { generateSubtypeColors } from "@/data/mockNmfData";
 import { Dendrogram, DendrogramNode } from "./Dendrogram";
 import { downloadChartAsPNG } from "@/lib/chartExport";
+import html2canvas from "html2canvas";
 
 import { AnnotationData } from "./AnnotationUploader";
 
@@ -232,6 +233,8 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
   const [geneClusterMethod, setGeneClusterMethod] = useState<ClusteringMethod>("ward");
   const [distanceMetric, setDistanceMetric] = useState<DistanceMetric>("euclidean");
   const [showDendrograms, setShowDendrograms] = useState(true);
+  const [excludedSubtypes, setExcludedSubtypes] = useState<Set<string>>(new Set());
+  const [excludedAnnotationValues, setExcludedAnnotationValues] = useState<Set<string>>(new Set());
   const heatmapRef = useRef<HTMLDivElement>(null);
 
   // Generate colors for user annotation values
@@ -244,23 +247,76 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
     return generateSubtypeColors([...values].sort());
   }, [selectedAnnotation, userAnnotations]);
 
+  // Toggle subtype exclusion
+  const toggleSubtypeExclusion = useCallback((subtype: string) => {
+    setExcludedSubtypes(prev => {
+      const next = new Set(prev);
+      if (next.has(subtype)) {
+        next.delete(subtype);
+      } else {
+        next.add(subtype);
+      }
+      return next;
+    });
+  }, []);
+
+  // Toggle annotation value exclusion
+  const toggleAnnotationExclusion = useCallback((value: string) => {
+    setExcludedAnnotationValues(prev => {
+      const next = new Set(prev);
+      if (next.has(value)) {
+        next.delete(value);
+      } else {
+        next.add(value);
+      }
+      return next;
+    });
+  }, []);
+
+  // Filter samples based on exclusions
+  const filteredData = useMemo(() => {
+    let includedIndices = data.samples.map((_, i) => i);
+    
+    // Filter by subtype exclusions
+    if (excludedSubtypes.size > 0) {
+      includedIndices = includedIndices.filter(i => !excludedSubtypes.has(data.sampleSubtypes[i]));
+    }
+    
+    // Filter by annotation exclusions
+    if (selectedAnnotation && userAnnotations && excludedAnnotationValues.size > 0) {
+      includedIndices = includedIndices.filter(i => {
+        const sampleId = data.samples[i];
+        const annotValue = userAnnotations.annotations[sampleId]?.[selectedAnnotation];
+        return !annotValue || !excludedAnnotationValues.has(annotValue);
+      });
+    }
+    
+    return {
+      samples: includedIndices.map(i => data.samples[i]),
+      sampleSubtypes: includedIndices.map(i => data.sampleSubtypes[i]),
+      values: data.values.map(row => includedIndices.map(i => row[i])),
+      genes: data.genes,
+      originalIndices: includedIndices,
+    };
+  }, [data, excludedSubtypes, excludedAnnotationValues, selectedAnnotation, userAnnotations]);
+
   const { displayValues, minVal, maxVal, sortedSampleIndices, sortedGeneIndices, uniqueSubtypes, sampleDendrogram, geneDendrogram } = useMemo(() => {
-    const normalizedValues = useZScore ? zScoreNormalize(data.values) : data.values;
+    const normalizedValues = useZScore ? zScoreNormalize(filteredData.values) : filteredData.values;
     const allValues = normalizedValues.flat();
-    const min = Math.min(...allValues);
-    const max = Math.max(...allValues);
+    const min = allValues.length > 0 ? Math.min(...allValues) : 0;
+    const max = allValues.length > 0 ? Math.max(...allValues) : 1;
     
     // Cluster or sort samples
     let sampleIndices: number[];
     let sampleTree: DendrogramNode | null = null;
-    if (sampleClusterMethod !== "none" && data.samples.length > 1) {
+    if (sampleClusterMethod !== "none" && filteredData.samples.length > 1) {
       const transposedData = transpose(normalizedValues);
       const result = hierarchicalCluster(transposedData, sampleClusterMethod, distanceMetric);
       sampleIndices = result.order;
       sampleTree = result.tree;
     } else {
       // Sort by subtype when not clustering
-      sampleIndices = data.sampleSubtypes
+      sampleIndices = filteredData.sampleSubtypes
         .map((subtype, idx) => ({ subtype, idx }))
         .sort((a, b) => a.subtype.localeCompare(b.subtype))
         .map(item => item.idx);
@@ -269,15 +325,15 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
     // Cluster or keep original gene order
     let geneIndices: number[];
     let geneTree: DendrogramNode | null = null;
-    if (geneClusterMethod !== "none" && data.genes.length > 1) {
+    if (geneClusterMethod !== "none" && filteredData.genes.length > 1) {
       const result = hierarchicalCluster(normalizedValues, geneClusterMethod, distanceMetric);
       geneIndices = result.order;
       geneTree = result.tree;
     } else {
-      geneIndices = data.genes.map((_, i) => i);
+      geneIndices = filteredData.genes.map((_, i) => i);
     }
     
-    const subtypes = [...new Set(data.sampleSubtypes)].sort();
+    const subtypes = [...new Set(data.sampleSubtypes)].sort(); // Use original data for all subtypes
     
     return { 
       displayValues: normalizedValues, 
@@ -289,9 +345,9 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
       sampleDendrogram: sampleTree,
       geneDendrogram: geneTree
     };
-  }, [data, useZScore, sampleClusterMethod, geneClusterMethod, distanceMetric]);
+  }, [filteredData, data.sampleSubtypes, useZScore, sampleClusterMethod, geneClusterMethod, distanceMetric]);
 
-  const cellWidth = Math.max(4, Math.min(10, 600 / data.samples.length));
+  const cellWidth = Math.max(4, Math.min(10, 600 / filteredData.samples.length));
   const cellHeight = 12;
 
   const handleCellHover = (
@@ -301,24 +357,24 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
   ) => {
     const rect = e.currentTarget.getBoundingClientRect();
     setTooltipPos({ x: rect.left + rect.width / 2, y: rect.top - 10 });
-    const sampleId = data.samples[sampleIdx];
+    const sampleId = filteredData.samples[sampleIdx];
     const userAnnotValue = selectedAnnotation && userAnnotations?.annotations[sampleId]
       ? userAnnotations.annotations[sampleId][selectedAnnotation]
       : undefined;
     setHoveredCell({
-      gene: data.genes[geneIdx],
+      gene: filteredData.genes[geneIdx],
       sample: sampleId,
       value: displayValues[geneIdx][sampleIdx],
-      subtype: data.sampleSubtypes[sampleIdx],
+      subtype: filteredData.sampleSubtypes[sampleIdx],
       userAnnotation: userAnnotValue,
     });
   };
 
   const exportToCSV = () => {
-    const header = ["Gene", ...sortedSampleIndices.map(idx => data.samples[idx])];
-    const subtypeRow = ["Subtype", ...sortedSampleIndices.map(idx => data.sampleSubtypes[idx])];
+    const header = ["Gene", ...sortedSampleIndices.map(idx => filteredData.samples[idx])];
+    const subtypeRow = ["Subtype", ...sortedSampleIndices.map(idx => filteredData.sampleSubtypes[idx])];
     const dataRows = sortedGeneIndices.map((geneIdx) => [
-      data.genes[geneIdx],
+      filteredData.genes[geneIdx],
       ...sortedSampleIndices.map(sampleIdx => displayValues[geneIdx][sampleIdx].toFixed(4))
     ]);
     
@@ -335,17 +391,39 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
     URL.revokeObjectURL(url);
   };
 
-  const handleDownloadPNG = () => {
-    downloadChartAsPNG(heatmapRef.current, "expression-heatmap");
+  const handleDownloadPNG = async () => {
+    if (!heatmapRef.current) return;
+    try {
+      const canvas = await html2canvas(heatmapRef.current, {
+        backgroundColor: "#ffffff",
+        scale: 2,
+        logging: false,
+        height: heatmapRef.current.scrollHeight + 60, // Extra padding for legend
+        windowHeight: heatmapRef.current.scrollHeight + 60,
+      });
+      const link = document.createElement("a");
+      link.download = "expression-heatmap.png";
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+    } catch (error) {
+      console.error("Failed to export heatmap:", error);
+    }
   };
 
-  const heatmapWidth = cellWidth * data.samples.length;
+  const heatmapWidth = cellWidth * filteredData.samples.length;
 
   return (
     <Card className="border-0 bg-card/50 backdrop-blur-sm relative">
       <CardHeader className="flex flex-col space-y-2 pb-2">
         <div className="flex flex-row items-center justify-between flex-wrap gap-2">
-          <CardTitle className="text-lg">Expression Heatmap ({data.genes.length} genes × {data.samples.length} samples)</CardTitle>
+          <CardTitle className="text-lg">
+            Expression Heatmap ({filteredData.genes.length} genes × {filteredData.samples.length} samples)
+            {(excludedSubtypes.size > 0 || excludedAnnotationValues.size > 0) && (
+              <span className="text-sm font-normal text-muted-foreground ml-2">
+                (filtered from {data.samples.length})
+              </span>
+            )}
+          </CardTitle>
           <div className="flex items-center gap-4 flex-wrap">
             {userAnnotations && userAnnotations.columns.length > 0 && (
               <AnnotationSelector
@@ -429,7 +507,7 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
           </div>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="pb-6">
         <div className="overflow-x-auto" ref={heatmapRef}>
           {/* Sample dendrogram (horizontal, above heatmap) */}
           {showDendrograms && sampleDendrogram && sampleClusterMethod !== "none" && (
@@ -469,9 +547,9 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
                     alignItems: "center",
                     justifyContent: "flex-end",
                   }}
-                  title={data.samples[idx]}
+                  title={filteredData.samples[idx]}
                 >
-                  <span className="truncate">{data.samples[idx]}</span>
+                  <span className="truncate">{filteredData.samples[idx]}</span>
                 </div>
               ))}
             </div>
@@ -486,7 +564,7 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
             <div className="flex mb-0.5">
               <div className="flex">
                 {sortedSampleIndices.map((idx, i) => {
-                  const sampleId = data.samples[idx];
+                  const sampleId = filteredData.samples[idx];
                   const value = userAnnotations.annotations[sampleId]?.[selectedAnnotation] || "";
                   return (
                     <div
@@ -517,9 +595,9 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
                   style={{
                     width: cellWidth,
                     height: 8,
-                    backgroundColor: subtypeColors[data.sampleSubtypes[idx]] || "hsl(var(--primary))",
+                    backgroundColor: subtypeColors[filteredData.sampleSubtypes[idx]] || "hsl(var(--primary))",
                   }}
-                  title={`${data.samples[idx]} - ${data.sampleSubtypes[idx]}`}
+                  title={`${filteredData.samples[idx]} - ${filteredData.sampleSubtypes[idx]}`}
                 />
               ))}
             </div>
@@ -558,7 +636,7 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
                 <Dendrogram
                   root={geneDendrogram}
                   width={40}
-                  height={cellHeight * data.genes.length}
+                  height={cellHeight * filteredData.genes.length}
                   orientation="vertical-right"
                   itemSize={cellHeight}
                 />
@@ -573,7 +651,7 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
                   className="text-xs text-left truncate text-muted-foreground"
                   style={{ height: cellHeight, lineHeight: `${cellHeight}px` }}
                 >
-                  {data.genes[geneIdx]}
+                  {filteredData.genes[geneIdx]}
                 </div>
               ))}
             </div>
@@ -596,33 +674,52 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
             <span className="text-xs text-muted-foreground">{useZScore ? "High (Z)" : "High"}</span>
           </div>
           
-          {/* Subtype legend */}
-          <div className="flex flex-wrap gap-4 mt-3 justify-center">
-            <span className="text-xs text-muted-foreground font-medium">NMF Subtypes:</span>
-            {uniqueSubtypes.map((subtype) => (
-              <div key={subtype} className="flex items-center gap-2">
+          {/* Subtype legend - clickable for exclusion */}
+          <div className="flex flex-wrap gap-4 mt-3 justify-center pb-2">
+            <span className="text-xs text-muted-foreground font-medium">NMF Subtypes (click to exclude):</span>
+            {uniqueSubtypes.map((subtype) => {
+              const isExcluded = excludedSubtypes.has(subtype);
+              return (
                 <div 
-                  className="w-3 h-3 rounded" 
-                  style={{ backgroundColor: subtypeColors[subtype] || "hsl(var(--primary))" }} 
-                />
-                <span className="text-xs text-muted-foreground">{subtype}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* User annotation legend */}
-          {selectedAnnotation && Object.keys(userAnnotationColors).length > 0 && (
-            <div className="flex flex-wrap gap-4 mt-2 justify-center border-t border-border/50 pt-2">
-              <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation}:</span>
-              {Object.entries(userAnnotationColors).map(([value, color]) => (
-                <div key={value} className="flex items-center gap-2">
+                  key={subtype} 
+                  className={`flex items-center gap-2 cursor-pointer transition-opacity ${isExcluded ? 'opacity-40' : 'hover:opacity-80'}`}
+                  onClick={() => toggleSubtypeExclusion(subtype)}
+                  title={isExcluded ? `Click to include ${subtype}` : `Click to exclude ${subtype}`}
+                >
                   <div 
                     className="w-3 h-3 rounded" 
-                    style={{ backgroundColor: color }} 
+                    style={{ 
+                      backgroundColor: subtypeColors[subtype] || "hsl(var(--primary))",
+                      textDecoration: isExcluded ? 'line-through' : 'none',
+                    }} 
                   />
-                  <span className="text-xs text-muted-foreground">{value}</span>
+                  <span className={`text-xs text-muted-foreground ${isExcluded ? 'line-through' : ''}`}>{subtype}</span>
                 </div>
-              ))}
+              );
+            })}
+          </div>
+
+          {/* User annotation legend - clickable for exclusion */}
+          {selectedAnnotation && Object.keys(userAnnotationColors).length > 0 && (
+            <div className="flex flex-wrap gap-4 mt-2 justify-center border-t border-border/50 pt-2 pb-2">
+              <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation} (click to exclude):</span>
+              {Object.entries(userAnnotationColors).map(([value, color]) => {
+                const isExcluded = excludedAnnotationValues.has(value);
+                return (
+                  <div 
+                    key={value} 
+                    className={`flex items-center gap-2 cursor-pointer transition-opacity ${isExcluded ? 'opacity-40' : 'hover:opacity-80'}`}
+                    onClick={() => toggleAnnotationExclusion(value)}
+                    title={isExcluded ? `Click to include ${value}` : `Click to exclude ${value}`}
+                  >
+                    <div 
+                      className="w-3 h-3 rounded" 
+                      style={{ backgroundColor: color }} 
+                    />
+                    <span className={`text-xs text-muted-foreground ${isExcluded ? 'line-through' : ''}`}>{value}</span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
