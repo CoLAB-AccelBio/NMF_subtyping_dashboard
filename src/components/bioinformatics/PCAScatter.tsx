@@ -111,6 +111,7 @@ const computePCA = (data: number[][]): { pc1: number[]; pc2: number[]; variance1
 export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatterProps) => {
   const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(null);
   const [excludedSubtypes, setExcludedSubtypes] = useState<Set<string>>(new Set());
+  const [excludedAnnotationValues, setExcludedAnnotationValues] = useState<Set<string>>(new Set());
   const chartRef = useRef<HTMLDivElement>(null);
 
   // Generate colors for user annotation values
@@ -123,10 +124,23 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
     return generateSubtypeColors([...values].sort());
   }, [selectedAnnotation, userAnnotations]);
 
-  // Filter samples based on excluded subtypes
+  // Filter samples based on excluded subtypes or annotation values
   const filteredSamples = useMemo(() => {
-    return samples.filter(s => !excludedSubtypes.has(s.subtype));
-  }, [samples, excludedSubtypes]);
+    return samples.filter(s => {
+      // If coloring by annotation, filter by annotation values
+      if (selectedAnnotation && userAnnotations) {
+        const annotValue = userAnnotations.annotations[s.sample_id]?.[selectedAnnotation];
+        if (annotValue && excludedAnnotationValues.has(annotValue)) {
+          return false;
+        }
+      }
+      // Also filter by subtypes if not using annotation coloring
+      if (!selectedAnnotation && excludedSubtypes.has(s.subtype)) {
+        return false;
+      }
+      return true;
+    });
+  }, [samples, excludedSubtypes, excludedAnnotationValues, selectedAnnotation, userAnnotations]);
 
   // Compute PCA from sample scores
   const { scatterData, uniqueSubtypes, uniqueAnnotationValues, variancePC1, variancePC2 } = useMemo(() => {
@@ -162,7 +176,7 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
     });
 
     const annotValues = selectedAnnotation
-      ? [...new Set(data.map(d => d.userAnnotation).filter(Boolean))].sort()
+      ? [...new Set(samples.map(s => userAnnotations?.annotations[s.sample_id]?.[selectedAnnotation]).filter(Boolean))].sort()
       : [];
 
     return { 
@@ -186,6 +200,18 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
     });
   };
 
+  const toggleAnnotationValue = (value: string) => {
+    setExcludedAnnotationValues(prev => {
+      const next = new Set(prev);
+      if (next.has(value)) {
+        next.delete(value);
+      } else {
+        next.add(value);
+      }
+      return next;
+    });
+  };
+
   const getPointColor = (entry: typeof scatterData[0]) => {
     if (selectedAnnotation && entry.userAnnotation) {
       return userAnnotationColors[entry.userAnnotation] || "hsl(var(--muted))";
@@ -195,6 +221,12 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
 
   const handleDownload = () => {
     downloadChartAsPNG(chartRef.current, "pca-plot");
+  };
+
+  // Reset excluded values when changing annotation
+  const handleAnnotationChange = (value: string | null) => {
+    setSelectedAnnotation(value);
+    setExcludedAnnotationValues(new Set());
   };
 
   const CustomTooltip = ({ active, payload }: any) => {
@@ -216,6 +248,8 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
     return null;
   };
 
+  const isFiltered = selectedAnnotation ? excludedAnnotationValues.size > 0 : excludedSubtypes.size > 0;
+
   return (
     <Card className="border-0 bg-card/50 backdrop-blur-sm">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 flex-wrap gap-2">
@@ -225,7 +259,7 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
             <AnnotationSelector
               columns={userAnnotations.columns}
               selectedColumn={selectedAnnotation}
-              onColumnChange={setSelectedAnnotation}
+              onColumnChange={handleAnnotationChange}
               label="Color by"
             />
           )}
@@ -289,15 +323,22 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
         <div className="flex flex-wrap gap-4 mt-4 justify-center">
           {selectedAnnotation && uniqueAnnotationValues.length > 0 ? (
             <>
-              <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation}:</span>
+              <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation} (click to exclude):</span>
               {uniqueAnnotationValues.map((value) => (
-                <div key={value} className="flex items-center gap-2">
+                <button
+                  key={value}
+                  className={`flex items-center gap-2 px-2 py-0.5 rounded transition-all ${
+                    excludedAnnotationValues.has(value as string) ? "opacity-40 line-through" : "hover:bg-muted/50"
+                  }`}
+                  onClick={() => toggleAnnotationValue(value as string)}
+                  title={excludedAnnotationValues.has(value as string) ? `Click to include ${value}` : `Click to exclude ${value}`}
+                >
                   <div
                     className="w-3 h-3 rounded-full"
                     style={{ backgroundColor: userAnnotationColors[value as string] || "hsl(var(--primary))" }}
                   />
                   <span className="text-xs text-muted-foreground">{value}</span>
-                </div>
+                </button>
               ))}
             </>
           ) : (
@@ -322,7 +363,7 @@ export const PCAScatter = ({ samples, subtypeColors, userAnnotations }: PCAScatt
             </>
           )}
         </div>
-        {excludedSubtypes.size > 0 && (
+        {isFiltered && (
           <p className="text-xs text-center text-muted-foreground mt-2">
             Showing {filteredSamples.length} of {samples.length} samples
           </p>

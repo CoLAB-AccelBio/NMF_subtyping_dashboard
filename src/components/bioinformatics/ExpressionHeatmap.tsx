@@ -452,6 +452,35 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
             </div>
           )}
 
+          {/* Sample IDs row */}
+          <div className="flex mb-0.5">
+            <div className="flex">
+              {sortedSampleIndices.map((idx, i) => (
+                <div
+                  key={`sample-${i}`}
+                  className="text-[6px] text-muted-foreground overflow-hidden"
+                  style={{
+                    width: cellWidth,
+                    height: 50,
+                    writingMode: "vertical-rl",
+                    textOrientation: "mixed",
+                    transform: "rotate(180deg)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "flex-end",
+                  }}
+                  title={data.samples[idx]}
+                >
+                  <span className="truncate">{data.samples[idx]}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ width: 4 }} />
+            <div className="text-[8px] text-muted-foreground text-left truncate pl-1 flex items-end" style={{ width: 80, height: 50 }}>
+              Sample ID
+            </div>
+          </div>
+
           {/* User annotation bar (if selected) */}
           {selectedAnnotation && userAnnotations && (
             <div className="flex mb-0.5">
