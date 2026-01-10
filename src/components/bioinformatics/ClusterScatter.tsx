@@ -3,11 +3,7 @@ import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, Tooltip, ResponsiveContaine
 import { SampleResult, generateSubtypeColors } from "@/data/mockNmfData";
 import { useMemo, useState } from "react";
 import { AnnotationSelector } from "./AnnotationSelector";
-
-interface AnnotationData {
-  annotations: Record<string, Record<string, string>>;
-  columns: string[];
-}
+import { AnnotationData } from "./AnnotationUploader";
 
 interface ClusterScatterProps {
   samples: SampleResult[];

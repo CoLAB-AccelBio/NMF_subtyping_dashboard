@@ -2,10 +2,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMemo, useState } from "react";
 import { Download } from "lucide-react";
 import { AnnotationSelector } from "./AnnotationSelector";
 import { generateSubtypeColors } from "@/data/mockNmfData";
+
+import { AnnotationData } from "./AnnotationUploader";
 
 interface HeatmapData {
   genes: string[];
@@ -14,16 +17,21 @@ interface HeatmapData {
   values: number[][];
 }
 
-interface AnnotationData {
-  annotations: Record<string, Record<string, string>>;
-  columns: string[];
-}
-
 interface ExpressionHeatmapProps {
   data: HeatmapData;
   subtypeColors: Record<string, string>;
   userAnnotations?: AnnotationData;
 }
+
+type ClusteringMethod = "none" | "average" | "complete" | "single" | "ward";
+
+const CLUSTERING_METHODS: { value: ClusteringMethod; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "average", label: "Average" },
+  { value: "complete", label: "Complete" },
+  { value: "single", label: "Single" },
+  { value: "ward", label: "Ward" },
+];
 
 const getHeatmapColor = (value: number, min: number, max: number) => {
   const normalized = (value - min) / (max - min);
@@ -47,11 +55,143 @@ const zScoreNormalize = (values: number[][]): number[][] => {
   });
 };
 
+// Calculate Euclidean distance between two vectors
+const euclideanDistance = (a: number[], b: number[]): number => {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) {
+    sum += Math.pow(a[i] - b[i], 2);
+  }
+  return Math.sqrt(sum);
+};
+
+// Hierarchical clustering implementation
+interface ClusterNode {
+  indices: number[];
+  left?: ClusterNode;
+  right?: ClusterNode;
+  distance: number;
+}
+
+const calculateDistanceMatrix = (data: number[][]): number[][] => {
+  const n = data.length;
+  const distMatrix: number[][] = Array(n).fill(null).map(() => Array(n).fill(0));
+  
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const dist = euclideanDistance(data[i], data[j]);
+      distMatrix[i][j] = dist;
+      distMatrix[j][i] = dist;
+    }
+  }
+  return distMatrix;
+};
+
+const clusterDistance = (
+  cluster1: ClusterNode,
+  cluster2: ClusterNode,
+  distMatrix: number[][],
+  method: ClusteringMethod
+): number => {
+  const distances: number[] = [];
+  
+  for (const i of cluster1.indices) {
+    for (const j of cluster2.indices) {
+      distances.push(distMatrix[i][j]);
+    }
+  }
+  
+  switch (method) {
+    case "single":
+      return Math.min(...distances);
+    case "complete":
+      return Math.max(...distances);
+    case "average":
+      return distances.reduce((a, b) => a + b, 0) / distances.length;
+    case "ward": {
+      // Simplified Ward's method - uses average distance weighted by cluster sizes
+      const avgDist = distances.reduce((a, b) => a + b, 0) / distances.length;
+      const n1 = cluster1.indices.length;
+      const n2 = cluster2.indices.length;
+      return avgDist * Math.sqrt((2 * n1 * n2) / (n1 + n2));
+    }
+    default:
+      return distances.reduce((a, b) => a + b, 0) / distances.length;
+  }
+};
+
+const hierarchicalCluster = (
+  data: number[][],
+  method: ClusteringMethod
+): number[] => {
+  if (method === "none" || data.length <= 1) {
+    return data.map((_, i) => i);
+  }
+  
+  const distMatrix = calculateDistanceMatrix(data);
+  
+  // Initialize clusters - each item is its own cluster
+  let clusters: ClusterNode[] = data.map((_, i) => ({
+    indices: [i],
+    distance: 0,
+  }));
+  
+  // Agglomerative clustering
+  while (clusters.length > 1) {
+    let minDist = Infinity;
+    let minI = 0;
+    let minJ = 1;
+    
+    // Find closest pair of clusters
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const dist = clusterDistance(clusters[i], clusters[j], distMatrix, method);
+        if (dist < minDist) {
+          minDist = dist;
+          minI = i;
+          minJ = j;
+        }
+      }
+    }
+    
+    // Merge clusters
+    const newCluster: ClusterNode = {
+      indices: [...clusters[minI].indices, ...clusters[minJ].indices],
+      left: clusters[minI],
+      right: clusters[minJ],
+      distance: minDist,
+    };
+    
+    // Remove merged clusters and add new one
+    clusters = clusters.filter((_, i) => i !== minI && i !== minJ);
+    clusters.push(newCluster);
+  }
+  
+  // Extract leaf order from dendrogram
+  const extractOrder = (node: ClusterNode): number[] => {
+    if (!node.left && !node.right) {
+      return node.indices;
+    }
+    const leftOrder = node.left ? extractOrder(node.left) : [];
+    const rightOrder = node.right ? extractOrder(node.right) : [];
+    return [...leftOrder, ...rightOrder];
+  };
+  
+  return extractOrder(clusters[0]);
+};
+
+// Transpose matrix for column clustering
+const transpose = (matrix: number[][]): number[][] => {
+  if (matrix.length === 0) return [];
+  return matrix[0].map((_, colIndex) => matrix.map(row => row[colIndex]));
+};
+
 export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: ExpressionHeatmapProps) => {
   const [hoveredCell, setHoveredCell] = useState<{ gene: string; sample: string; value: number; subtype: string; userAnnotation?: string } | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [useZScore, setUseZScore] = useState(true);
   const [selectedAnnotation, setSelectedAnnotation] = useState<string | null>(null);
+  const [sampleClusterMethod, setSampleClusterMethod] = useState<ClusteringMethod>("none");
+  const [geneClusterMethod, setGeneClusterMethod] = useState<ClusteringMethod>("none");
 
   // Generate colors for user annotation values
   const userAnnotationColors = useMemo(() => {
@@ -63,22 +203,44 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
     return generateSubtypeColors([...values].sort());
   }, [selectedAnnotation, userAnnotations]);
 
-  const { displayValues, minVal, maxVal, sortedIndices, uniqueSubtypes } = useMemo(() => {
+  const { displayValues, minVal, maxVal, sortedSampleIndices, sortedGeneIndices, uniqueSubtypes } = useMemo(() => {
     const normalizedValues = useZScore ? zScoreNormalize(data.values) : data.values;
     const allValues = normalizedValues.flat();
     const min = Math.min(...allValues);
     const max = Math.max(...allValues);
     
-    // Sort samples by subtype
-    const indices = data.sampleSubtypes
-      .map((subtype, idx) => ({ subtype, idx }))
-      .sort((a, b) => a.subtype.localeCompare(b.subtype))
-      .map(item => item.idx);
+    // Cluster or sort samples
+    let sampleIndices: number[];
+    if (sampleClusterMethod !== "none" && data.samples.length > 1) {
+      const transposedData = transpose(normalizedValues);
+      sampleIndices = hierarchicalCluster(transposedData, sampleClusterMethod);
+    } else {
+      // Sort by subtype when not clustering
+      sampleIndices = data.sampleSubtypes
+        .map((subtype, idx) => ({ subtype, idx }))
+        .sort((a, b) => a.subtype.localeCompare(b.subtype))
+        .map(item => item.idx);
+    }
+    
+    // Cluster or keep original gene order
+    let geneIndices: number[];
+    if (geneClusterMethod !== "none" && data.genes.length > 1) {
+      geneIndices = hierarchicalCluster(normalizedValues, geneClusterMethod);
+    } else {
+      geneIndices = data.genes.map((_, i) => i);
+    }
     
     const subtypes = [...new Set(data.sampleSubtypes)].sort();
     
-    return { displayValues: normalizedValues, minVal: min, maxVal: max, sortedIndices: indices, uniqueSubtypes: subtypes };
-  }, [data, useZScore]);
+    return { 
+      displayValues: normalizedValues, 
+      minVal: min, 
+      maxVal: max, 
+      sortedSampleIndices: sampleIndices, 
+      sortedGeneIndices: geneIndices,
+      uniqueSubtypes: subtypes 
+    };
+  }, [data, useZScore, sampleClusterMethod, geneClusterMethod]);
 
   const cellWidth = Math.max(4, Math.min(10, 600 / data.samples.length));
   const cellHeight = 12;
@@ -104,11 +266,11 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
   };
 
   const exportToCSV = () => {
-    const header = ["Gene", ...sortedIndices.map(idx => data.samples[idx])];
-    const subtypeRow = ["Subtype", ...sortedIndices.map(idx => data.sampleSubtypes[idx])];
-    const dataRows = data.genes.map((gene, geneIdx) => [
-      gene,
-      ...sortedIndices.map(sampleIdx => displayValues[geneIdx][sampleIdx].toFixed(4))
+    const header = ["Gene", ...sortedSampleIndices.map(idx => data.samples[idx])];
+    const subtypeRow = ["Subtype", ...sortedSampleIndices.map(idx => data.sampleSubtypes[idx])];
+    const dataRows = sortedGeneIndices.map((geneIdx) => [
+      data.genes[geneIdx],
+      ...sortedSampleIndices.map(sampleIdx => displayValues[geneIdx][sampleIdx].toFixed(4))
     ]);
     
     const csvContent = [header, subtypeRow, ...dataRows]
@@ -126,30 +288,62 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
 
   return (
     <Card className="border-0 bg-card/50 backdrop-blur-sm relative">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2 flex-wrap gap-2">
-        <CardTitle className="text-lg">Expression Heatmap (Top Marker Genes)</CardTitle>
-        <div className="flex items-center gap-4 flex-wrap">
-          {userAnnotations && userAnnotations.columns.length > 0 && (
-            <AnnotationSelector
-              columns={userAnnotations.columns}
-              selectedColumn={selectedAnnotation}
-              onColumnChange={setSelectedAnnotation}
-            />
-          )}
-          <div className="flex items-center gap-2">
-            <Switch
-              id="zscore-toggle"
-              checked={useZScore}
-              onCheckedChange={setUseZScore}
-            />
-            <Label htmlFor="zscore-toggle" className="text-xs text-muted-foreground">
-              Z-score
-            </Label>
+      <CardHeader className="flex flex-col space-y-2 pb-2">
+        <div className="flex flex-row items-center justify-between flex-wrap gap-2">
+          <CardTitle className="text-lg">Expression Heatmap (Top Marker Genes)</CardTitle>
+          <div className="flex items-center gap-4 flex-wrap">
+            {userAnnotations && userAnnotations.columns.length > 0 && (
+              <AnnotationSelector
+                columns={userAnnotations.columns}
+                selectedColumn={selectedAnnotation}
+                onColumnChange={setSelectedAnnotation}
+              />
+            )}
+            <div className="flex items-center gap-2">
+              <Switch
+                id="zscore-toggle"
+                checked={useZScore}
+                onCheckedChange={setUseZScore}
+              />
+              <Label htmlFor="zscore-toggle" className="text-xs text-muted-foreground">
+                Z-score
+              </Label>
+            </div>
+            <Button variant="outline" size="sm" onClick={exportToCSV}>
+              <Download className="h-4 w-4 mr-1" />
+              CSV
+            </Button>
           </div>
-          <Button variant="outline" size="sm" onClick={exportToCSV}>
-            <Download className="h-4 w-4 mr-1" />
-            CSV
-          </Button>
+        </div>
+        
+        {/* Clustering options */}
+        <div className="flex items-center gap-4 flex-wrap text-xs">
+          <div className="flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground whitespace-nowrap">Sample clustering:</Label>
+            <Select value={sampleClusterMethod} onValueChange={(v) => setSampleClusterMethod(v as ClusteringMethod)}>
+              <SelectTrigger className="h-7 w-[100px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-popover border border-border">
+                {CLUSTERING_METHODS.map((m) => (
+                  <SelectItem key={m.value} value={m.value} className="text-xs">{m.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground whitespace-nowrap">Gene clustering:</Label>
+            <Select value={geneClusterMethod} onValueChange={(v) => setGeneClusterMethod(v as ClusteringMethod)}>
+              <SelectTrigger className="h-7 w-[100px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-popover border border-border">
+                {CLUSTERING_METHODS.map((m) => (
+                  <SelectItem key={m.value} value={m.value} className="text-xs">{m.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -161,7 +355,7 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
                 {selectedAnnotation}
               </div>
               <div className="flex">
-                {sortedIndices.map((idx, i) => {
+                {sortedSampleIndices.map((idx, i) => {
                   const sampleId = data.samples[idx];
                   const value = userAnnotations.annotations[sampleId]?.[selectedAnnotation] || "";
                   return (
@@ -186,7 +380,7 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
               NMF Subtype
             </div>
             <div className="flex">
-              {sortedIndices.map((idx, i) => (
+              {sortedSampleIndices.map((idx, i) => (
                 <div
                   key={i}
                   style={{
@@ -204,28 +398,28 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations }: Expr
           <div className="flex">
             {/* Gene labels */}
             <div className="flex flex-col mr-2" style={{ width: 72 }}>
-              {data.genes.map((gene) => (
+              {sortedGeneIndices.map((geneIdx) => (
                 <div
-                  key={gene}
+                  key={geneIdx}
                   className="text-xs text-right pr-1 truncate text-muted-foreground"
                   style={{ height: cellHeight, lineHeight: `${cellHeight}px` }}
                 >
-                  {gene}
+                  {data.genes[geneIdx]}
                 </div>
               ))}
             </div>
             
             {/* Heatmap cells */}
             <div>
-              {displayValues.map((row, geneIdx) => (
+              {sortedGeneIndices.map((geneIdx) => (
                 <div key={geneIdx} className="flex">
-                  {sortedIndices.map((sampleIdx, i) => (
+                  {sortedSampleIndices.map((sampleIdx, i) => (
                     <div
                       key={i}
                       style={{
                         width: cellWidth,
                         height: cellHeight,
-                        backgroundColor: getHeatmapColor(row[sampleIdx], minVal, maxVal),
+                        backgroundColor: getHeatmapColor(displayValues[geneIdx][sampleIdx], minVal, maxVal),
                       }}
                       className="cursor-pointer hover:ring-1 hover:ring-white hover:z-10"
                       onMouseEnter={(e) => handleCellHover(e, geneIdx, sampleIdx)}
