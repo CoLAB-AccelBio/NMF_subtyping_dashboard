@@ -60,7 +60,7 @@ const Index = () => {
     { id: 'cluster', name: 'umap-cluster', ref: clusterScatterRef.current, type: 'recharts' },
     { id: 'pca', name: 'pca-scatter', ref: pcaScatterRef.current, type: 'recharts' },
     { id: 'scree', name: 'pca-scree', ref: pcaScreeRef.current, type: 'recharts' },
-    { id: 'heatmap', name: 'expression-heatmap', ref: heatmapRef.current, type: 'heatmap', pngOptions: { paddingRight: 100, paddingBottom: 50 } },
+    { id: 'heatmap', name: 'expression-heatmap', ref: heatmapRef.current, type: 'heatmap', pngOptions: { paddingRight: 100, paddingBottom: 140 } },
     { id: 'cophenetic', name: 'cophenetic-plot', ref: copheneticRef.current, type: 'recharts' },
     { id: 'survival', name: 'survival-curve', ref: survivalRef.current, type: 'recharts' },
   ], []);

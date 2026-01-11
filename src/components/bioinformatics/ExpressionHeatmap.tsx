@@ -496,14 +496,14 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations, filter
       const scrollWidth = element.scrollWidth;
       const scrollHeight = element.scrollHeight;
 
-      // Extra padding for labels
+      // Extra padding for labels - increased bottom padding for legends
       const paddingLeft = 20;
-      const paddingRight = 60;
-      const paddingBottom = 40;
+      const paddingRight = 80;
+      const paddingBottom = 120; // Increased for annotation legend and sample names
 
       const canvas = await html2canvas(element, {
         backgroundColor: "#ffffff",
-        scale: 3,
+        scale: 4, // Increased for better readability
         logging: false,
         useCORS: true,
         allowTaint: true,
@@ -547,24 +547,24 @@ export const ExpressionHeatmap = ({ data, subtypeColors, userAnnotations, filter
             
             // Use CSS transforms to rotate text vertically (like SVG)
             el.style.position = 'relative';
-            el.style.height = '55px';
+            el.style.height = '65px'; // Increased height for better visibility
             el.style.width = `${cellWidth}px`;
             el.style.overflow = 'visible';
-            el.style.marginTop = '0px';
+            el.style.marginTop = '4px'; // Small gap from annotation bar
             
             if (span) {
               span.style.position = 'absolute';
-              span.style.transformOrigin = 'center center';
-              span.style.transform = 'rotate(-90deg)';
+              span.style.transformOrigin = 'left top';
+              span.style.transform = 'rotate(-90deg) translateX(-100%)';
               span.style.whiteSpace = 'nowrap';
-              span.style.fontSize = '6px';
+              span.style.fontSize = '7px'; // Slightly larger for readability
               span.style.fontFamily = 'Arial, sans-serif';
               span.style.overflow = 'visible';
               span.style.textOverflow = 'clip';
               span.style.left = '50%';
-              span.style.top = '50%';
-              span.style.marginLeft = '-25px';
-              span.style.marginTop = '-5px';
+              span.style.top = '0';
+              span.style.marginLeft = '0';
+              span.style.marginTop = '0';
             }
           });
         },
