@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import { SampleResult, generateSubtypeColors } from "@/data/mockNmfData";
+import { SampleResult, generateSubtypeColors, isNumericColumn, getContinuousColor, createContinuousColorScale } from "@/data/mockNmfData";
 import React, { useMemo, useState, useRef, useEffect } from "react";
 import { Download, RotateCcw } from "lucide-react";
 import { AnnotationSelector } from "./AnnotationSelector";
@@ -29,15 +29,34 @@ export const ClusterScatter = ({ samples, subtypeColors, userAnnotations, filter
     }
   }, [filterResetKey]);
 
-  // Generate colors for user annotation values
+  // Check if selected annotation is numeric
+  const isNumericAnnotation = useMemo(() => {
+    if (!selectedAnnotation || !userAnnotations) return false;
+    const values = Object.values(userAnnotations.annotations)
+      .map(annot => annot[selectedAnnotation])
+      .filter(v => v !== undefined);
+    return isNumericColumn(values);
+  }, [selectedAnnotation, userAnnotations]);
+
+  // Generate colors for user annotation values (categorical)
   const userAnnotationColors = useMemo(() => {
-    if (!selectedAnnotation || !userAnnotations) return {};
+    if (!selectedAnnotation || !userAnnotations || isNumericAnnotation) return {};
     const values = new Set<string>();
     Object.values(userAnnotations.annotations).forEach(annot => {
       if (annot[selectedAnnotation]) values.add(annot[selectedAnnotation]);
     });
     return generateSubtypeColors([...values].sort());
-  }, [selectedAnnotation, userAnnotations]);
+  }, [selectedAnnotation, userAnnotations, isNumericAnnotation]);
+
+  // Create continuous color scale for numeric annotations
+  const continuousColorScale = useMemo(() => {
+    if (!selectedAnnotation || !userAnnotations || !isNumericAnnotation) return null;
+    const values = Object.values(userAnnotations.annotations)
+      .map(annot => parseFloat(annot[selectedAnnotation]))
+      .filter(v => !isNaN(v) && isFinite(v));
+    if (values.length === 0) return null;
+    return createContinuousColorScale(values, 'viridis');
+  }, [selectedAnnotation, userAnnotations, isNumericAnnotation]);
 
   // Filter samples based on excluded subtypes or annotation values
   const filteredSamples = useMemo(() => {
@@ -116,7 +135,13 @@ export const ClusterScatter = ({ samples, subtypeColors, userAnnotations, filter
   };
 
   const getPointColor = (entry: typeof scatterData[0]) => {
-    if (selectedAnnotation && entry.userAnnotation) {
+    if (selectedAnnotation && entry.userAnnotation !== undefined) {
+      if (isNumericAnnotation && continuousColorScale) {
+        const numValue = parseFloat(String(entry.userAnnotation));
+        if (!isNaN(numValue)) {
+          return continuousColorScale.getColor(numValue);
+        }
+      }
       return userAnnotationColors[entry.userAnnotation] || "hsl(var(--muted))";
     }
     return subtypeColors[entry.subtype] || "hsl(var(--primary))";
@@ -226,9 +251,26 @@ export const ClusterScatter = ({ samples, subtypeColors, userAnnotations, filter
           </ResponsiveContainer>
         </div>
         
-        {/* Legend with clickable items */}
+        {/* Legend with clickable items or continuous color bar */}
         <div className="flex flex-wrap gap-4 mt-4 justify-center">
-          {selectedAnnotation && uniqueAnnotationValues.length > 0 ? (
+          {selectedAnnotation && isNumericAnnotation && continuousColorScale ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation}:</span>
+              <span className="text-xs text-muted-foreground">{continuousColorScale.min.toFixed(1)}</span>
+              <div 
+                className="w-32 h-4 rounded"
+                style={{
+                  background: `linear-gradient(to right, ${
+                    [0, 0.25, 0.5, 0.75, 1].map(t => 
+                      getContinuousColor(continuousColorScale.min + t * (continuousColorScale.max - continuousColorScale.min), 
+                        continuousColorScale.min, continuousColorScale.max, 'viridis')
+                    ).join(', ')
+                  })`
+                }}
+              />
+              <span className="text-xs text-muted-foreground">{continuousColorScale.max.toFixed(1)}</span>
+            </div>
+          ) : selectedAnnotation && uniqueAnnotationValues.length > 0 ? (
             <>
               <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation} (click to exclude):</span>
               {uniqueAnnotationValues.map((value) => (

@@ -41,6 +41,12 @@ export interface StratifiedCoxPHResult extends CoxPHResult {
     upperCI: number;
     pValue: number;
   }>;
+  interactionTest?: {
+    chiSquare: number;
+    df: number;
+    pValue: number;
+    significant: boolean;
+  };
 }
 
 /**
@@ -387,6 +393,41 @@ export function stratifiedCoxPH(
   const df = groups.length;
   const waldPValue = 1 - chiSquareCDF(chiSquare, df);
   
+  // Calculate interaction test (test for heterogeneity across strata)
+  // Uses Cochran's Q statistic to test if HRs vary significantly across strata
+  let interactionTest: StratifiedCoxPHResult['interactionTest'] | undefined;
+  
+  if (strataResults.length >= 2 && groups.length > 0) {
+    // For each comparison group, calculate Q statistic across strata
+    let totalQ = 0;
+    let totalDf = 0;
+    
+    Object.entries(pooledData).forEach(([subtype, data]) => {
+      if (data.weights.length < 2) return;
+      
+      const totalWeight = data.weights.reduce((a, b) => a + b, 0);
+      const pooledLogHR = data.logHRs.reduce((sum, lhr, i) => 
+        sum + lhr * data.weights[i], 0) / totalWeight;
+      
+      // Cochran's Q = Σ w_i * (logHR_i - pooledLogHR)^2
+      const Q = data.logHRs.reduce((sum, lhr, i) => 
+        sum + data.weights[i] * Math.pow(lhr - pooledLogHR, 2), 0);
+      
+      totalQ += Q;
+      totalDf += data.weights.length - 1;
+    });
+    
+    if (totalDf > 0) {
+      const interactionPValue = 1 - chiSquareCDF(totalQ, totalDf);
+      interactionTest = {
+        chiSquare: totalQ,
+        df: totalDf,
+        pValue: interactionPValue,
+        significant: interactionPValue < 0.05
+      };
+    }
+  }
+  
   return {
     referenceGroup,
     groups,
@@ -397,6 +438,7 @@ export function stratifiedCoxPH(
     },
     stratifiedBy: strata.length > 1 ? `${strata.length} strata` : undefined,
     strataResults,
-    pooledHR
+    pooledHR,
+    interactionTest
   };
 }
