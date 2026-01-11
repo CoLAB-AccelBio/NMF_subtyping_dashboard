@@ -67,6 +67,44 @@ export interface MultivariateCoxPHResult {
     pValue: number;
   };
   concordance?: number;
+  logLikelihood?: number;
+}
+
+export interface ModelComparisonResult {
+  nullModel: {
+    covariates: string[];
+    logLikelihood: number;
+    df: number;
+    aic: number;
+  };
+  fullModel: {
+    covariates: string[];
+    logLikelihood: number;
+    df: number;
+    aic: number;
+  };
+  likelihoodRatioTest: {
+    chiSquare: number;
+    df: number;
+    pValue: number;
+  };
+  addedCovariates: string[];
+  significantImprovement: boolean;
+}
+
+export interface BackwardEliminationResult {
+  steps: Array<{
+    step: number;
+    removedCovariate: string | null;
+    removedPValue: number | null;
+    remainingCovariates: string[];
+    modelAIC: number;
+    waldPValue: number;
+  }>;
+  finalCovariates: string[];
+  significantCovariates: string[];
+  removedCovariates: string[];
+  threshold: number;
 }
 
 /**
@@ -610,13 +648,17 @@ export function multivariateCoxPH(
   const df = covariates.length;
   const waldPValue = 1 - chiSquareCDF(chiSquare, df);
   
+  // Approximate log-likelihood
+  const logLikelihood = -0.5 * chiSquare;
+
   return {
     covariates,
     waldTest: {
       chiSquare,
       df,
       pValue: waldPValue
-    }
+    },
+    logLikelihood
   };
 }
 
@@ -661,5 +703,206 @@ function createWeightedSurvival(
     subtype: groupName,
     nTotal: total,
     timePoints
+  };
+}
+
+/**
+ * Compare two nested multivariate Cox models using likelihood ratio test
+ */
+export function compareNestedModels(
+  nullModelResult: MultivariateCoxPHResult | null,
+  fullModelResult: MultivariateCoxPHResult | null
+): ModelComparisonResult | null {
+  if (!fullModelResult || fullModelResult.covariates.length === 0) {
+    return null;
+  }
+
+  const nullCovariates = nullModelResult?.covariates.map(c => c.name) || [];
+  const fullCovariates = fullModelResult.covariates.map(c => c.name);
+  const addedCovariates = fullCovariates.filter(c => !nullCovariates.includes(c));
+  
+  if (addedCovariates.length === 0 && nullModelResult) {
+    return null;
+  }
+
+  const nullLogLikelihood = nullModelResult?.logLikelihood ?? 0;
+  const fullLogLikelihood = fullModelResult.logLikelihood ?? -0.5 * fullModelResult.waldTest.chiSquare;
+  
+  const nullDf = nullModelResult?.covariates.length ?? 0;
+  const fullDf = fullModelResult.covariates.length;
+  const dfDiff = fullDf - nullDf;
+  
+  if (dfDiff <= 0) return null;
+
+  const nullChiSquare = nullModelResult?.waldTest.chiSquare ?? 0;
+  const fullChiSquare = fullModelResult.waldTest.chiSquare;
+  const lrtChiSquare = Math.max(0, fullChiSquare - nullChiSquare);
+  const lrtPValue = 1 - chiSquareCDF(lrtChiSquare, dfDiff);
+  
+  const nullAIC = -2 * nullLogLikelihood + 2 * nullDf;
+  const fullAIC = -2 * fullLogLikelihood + 2 * fullDf;
+
+  return {
+    nullModel: { covariates: nullCovariates, logLikelihood: nullLogLikelihood, df: nullDf, aic: nullAIC },
+    fullModel: { covariates: fullCovariates, logLikelihood: fullLogLikelihood, df: fullDf, aic: fullAIC },
+    likelihoodRatioTest: { chiSquare: lrtChiSquare, df: dfDiff, pValue: lrtPValue },
+    addedCovariates,
+    significantImprovement: lrtPValue < 0.05
+  };
+}
+
+/**
+ * Stepwise model comparison by adding one covariate at a time
+ */
+export function stepwiseModelComparison(
+  survivalData: SurvivalData[],
+  covariateData: Record<string, Record<string, string | number>>,
+  sampleSubtypes: Record<string, string>,
+  orderedCovariates: string[],
+  subtypeCounts?: Record<string, number>
+): ModelComparisonResult[] {
+  const comparisons: ModelComparisonResult[] = [];
+  if (orderedCovariates.length === 0) return comparisons;
+
+  let previousModel: MultivariateCoxPHResult | null = null;
+  
+  for (let i = 0; i < orderedCovariates.length; i++) {
+    const currentCovariates = orderedCovariates.slice(0, i + 1);
+    const currentCovariateData: Record<string, Record<string, string | number>> = {};
+    
+    currentCovariates.forEach(cov => {
+      if (covariateData[cov]) {
+        currentCovariateData[cov] = covariateData[cov];
+      }
+    });
+    
+    const currentModel = multivariateCoxPH(survivalData, currentCovariateData, sampleSubtypes, subtypeCounts);
+    
+    if (currentModel) {
+      const comparison = compareNestedModels(previousModel, currentModel);
+      if (comparison) comparisons.push(comparison);
+      previousModel = currentModel;
+    }
+  }
+  
+  return comparisons;
+}
+
+/**
+ * Backward elimination for multivariate Cox model
+ * Removes non-significant covariates one at a time until all remaining are significant
+ */
+export function backwardElimination(
+  survivalData: SurvivalData[],
+  covariateData: Record<string, Record<string, string | number>>,
+  sampleSubtypes: Record<string, string>,
+  initialCovariates: string[],
+  subtypeCounts?: Record<string, number>,
+  threshold: number = 0.05
+): BackwardEliminationResult {
+  const steps: BackwardEliminationResult['steps'] = [];
+  let currentCovariates = [...initialCovariates];
+  const removedCovariates: string[] = [];
+  
+  // Step 0: Initial full model
+  let currentCovariateData: Record<string, Record<string, string | number>> = {};
+  currentCovariates.forEach(cov => {
+    if (covariateData[cov]) {
+      currentCovariateData[cov] = covariateData[cov];
+    }
+  });
+  
+  let currentModel = multivariateCoxPH(survivalData, currentCovariateData, sampleSubtypes, subtypeCounts);
+  
+  if (!currentModel) {
+    return {
+      steps: [],
+      finalCovariates: [],
+      significantCovariates: [],
+      removedCovariates: initialCovariates,
+      threshold
+    };
+  }
+  
+  // Calculate AIC for initial model
+  const initialAIC = currentModel.logLikelihood 
+    ? -2 * currentModel.logLikelihood + 2 * currentModel.covariates.length
+    : 0;
+  
+  steps.push({
+    step: 0,
+    removedCovariate: null,
+    removedPValue: null,
+    remainingCovariates: [...currentCovariates],
+    modelAIC: initialAIC,
+    waldPValue: currentModel.waldTest.pValue
+  });
+  
+  let stepNumber = 1;
+  const maxIterations = initialCovariates.length;
+  
+  for (let iter = 0; iter < maxIterations; iter++) {
+    if (currentCovariates.length <= 1) break;
+    
+    // Find the covariate with highest p-value
+    let maxPValue = 0;
+    let maxPValueCovariate: string | null = null;
+    
+    currentModel.covariates.forEach(cov => {
+      if (cov.pValue > maxPValue) {
+        maxPValue = cov.pValue;
+        maxPValueCovariate = cov.name;
+      }
+    });
+    
+    // If highest p-value is below threshold, stop
+    if (maxPValue < threshold || !maxPValueCovariate) {
+      break;
+    }
+    
+    // Remove this covariate
+    currentCovariates = currentCovariates.filter(c => c !== maxPValueCovariate);
+    removedCovariates.push(maxPValueCovariate);
+    
+    // Rebuild model
+    currentCovariateData = {};
+    currentCovariates.forEach(cov => {
+      if (covariateData[cov]) {
+        currentCovariateData[cov] = covariateData[cov];
+      }
+    });
+    
+    const newModel = multivariateCoxPH(survivalData, currentCovariateData, sampleSubtypes, subtypeCounts);
+    
+    if (!newModel) break;
+    
+    const newAIC = newModel.logLikelihood 
+      ? -2 * newModel.logLikelihood + 2 * newModel.covariates.length
+      : 0;
+    
+    steps.push({
+      step: stepNumber,
+      removedCovariate: maxPValueCovariate,
+      removedPValue: maxPValue,
+      remainingCovariates: [...currentCovariates],
+      modelAIC: newAIC,
+      waldPValue: newModel.waldTest.pValue
+    });
+    
+    currentModel = newModel;
+    stepNumber++;
+  }
+  
+  // Get final significant covariates
+  const significantCovariates = currentModel.covariates
+    .filter(c => c.pValue < threshold)
+    .map(c => c.name);
+  
+  return {
+    steps,
+    finalCovariates: currentCovariates,
+    significantCovariates,
+    removedCovariates,
+    threshold
   };
 }
