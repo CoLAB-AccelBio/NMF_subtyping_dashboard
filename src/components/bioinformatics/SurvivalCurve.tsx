@@ -22,6 +22,7 @@ import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger }
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnnotationData } from "@/components/bioinformatics/AnnotationUploader";
 import { ForestPlot } from "@/components/bioinformatics/ForestPlot";
+import { StratumResultsTable } from "@/components/bioinformatics/StratumResultsTable";
 
 export interface SurvivalTimePoint {
   time: number;
@@ -1035,6 +1036,15 @@ export const SurvivalCurve = ({
               ? `Forest Plot: ${groupBy}` 
               : "Forest Plot: NMF Subtypes"
         }
+      />
+    )}
+    
+    {/* Stratum-Specific Results Table */}
+    {isStratified && coxPHResult && 'strataResults' in coxPHResult && (coxPHResult as StratifiedCoxPHResult).strataResults.length > 0 && (
+      <StratumResultsTable
+        result={coxPHResult as StratifiedCoxPHResult}
+        subtypeColors={effectiveColors}
+        stratifyBy={stratifyBy}
       />
     )}
   </div>

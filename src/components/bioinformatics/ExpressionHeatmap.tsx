@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import React, { useMemo, useState, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 import { Download, RotateCcw } from "lucide-react";
 import { AnnotationSelector } from "./AnnotationSelector";
-import { generateSubtypeColors, MarkerGene } from "@/data/mockNmfData";
+import { generateSubtypeColors, MarkerGene, isNumericColumn, getContinuousColor, createContinuousColorScale } from "@/data/mockNmfData";
 import { Dendrogram, DendrogramNode } from "./Dendrogram";
 import html2canvas from "html2canvas";
 
@@ -294,15 +294,48 @@ export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeat
   // Inner content container (for exports)
   const heatmapExportRef = useRef<HTMLDivElement>(null);
 
-  // Generate colors for user annotation values
+  // Check if selected annotation is numeric
+  const isNumericAnnotation = useMemo(() => {
+    if (!selectedAnnotation || !userAnnotations) return false;
+    const values = Object.values(userAnnotations.annotations)
+      .map(annot => annot[selectedAnnotation])
+      .filter(v => v !== undefined);
+    return isNumericColumn(values);
+  }, [selectedAnnotation, userAnnotations]);
+
+  // Generate colors for user annotation values (categorical)
   const userAnnotationColors = useMemo(() => {
-    if (!selectedAnnotation || !userAnnotations) return {};
+    if (!selectedAnnotation || !userAnnotations || isNumericAnnotation) return {};
     const values = new Set<string>();
     Object.values(userAnnotations.annotations).forEach(annot => {
       if (annot[selectedAnnotation]) values.add(annot[selectedAnnotation]);
     });
     return generateSubtypeColors([...values].sort());
-  }, [selectedAnnotation, userAnnotations]);
+  }, [selectedAnnotation, userAnnotations, isNumericAnnotation]);
+
+  // Create continuous color scale for numeric annotations
+  const continuousColorScale = useMemo(() => {
+    if (!selectedAnnotation || !userAnnotations || !isNumericAnnotation) return null;
+    const values = Object.values(userAnnotations.annotations)
+      .map(annot => parseFloat(annot[selectedAnnotation]))
+      .filter(v => !isNaN(v) && isFinite(v));
+    if (values.length === 0) return null;
+    return createContinuousColorScale(values, 'viridis');
+  }, [selectedAnnotation, userAnnotations, isNumericAnnotation]);
+
+  // Get color for annotation value (handles both categorical and continuous)
+  const getAnnotationColor = useCallback((value: string | undefined): string => {
+    if (value === undefined || value === null || value === '') {
+      return "hsl(var(--muted))";
+    }
+    if (isNumericAnnotation && continuousColorScale) {
+      const numValue = parseFloat(value);
+      if (!isNaN(numValue)) {
+        return continuousColorScale.getColor(numValue);
+      }
+    }
+    return userAnnotationColors[value] || "hsl(var(--muted))";
+  }, [isNumericAnnotation, continuousColorScale, userAnnotationColors]);
 
   // Toggle subtype exclusion
   const toggleSubtypeExclusion = useCallback((subtype: string) => {
@@ -1107,7 +1140,7 @@ export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeat
                       style={{
                         width: cellWidth,
                         height: 8,
-                        backgroundColor: userAnnotationColors[value] || "hsl(var(--muted))",
+                        backgroundColor: getAnnotationColor(value),
                       }}
                       title={`${selectedAnnotation}: ${value}`}
                     />
@@ -1234,8 +1267,25 @@ export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeat
             })}
           </div>
 
-          {/* User annotation legend - clickable for exclusion */}
-          {selectedAnnotation && Object.keys(userAnnotationColors).length > 0 && (
+          {/* User annotation legend - continuous color bar or clickable for exclusion */}
+          {selectedAnnotation && isNumericAnnotation && continuousColorScale ? (
+            <div className="flex items-center gap-2 mt-2 justify-center border-t border-border/50 pt-2 pb-2">
+              <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation}:</span>
+              <span className="text-xs text-muted-foreground">{continuousColorScale.min.toFixed(1)}</span>
+              <div 
+                className="w-32 h-4 rounded"
+                style={{
+                  background: `linear-gradient(to right, ${
+                    [0, 0.25, 0.5, 0.75, 1].map(t => 
+                      getContinuousColor(continuousColorScale.min + t * (continuousColorScale.max - continuousColorScale.min), 
+                        continuousColorScale.min, continuousColorScale.max, 'viridis')
+                    ).join(', ')
+                  })`
+                }}
+              />
+              <span className="text-xs text-muted-foreground">{continuousColorScale.max.toFixed(1)}</span>
+            </div>
+          ) : selectedAnnotation && Object.keys(userAnnotationColors).length > 0 && (
             <div className="flex flex-wrap gap-4 mt-2 justify-center border-t border-border/50 pt-2 pb-2">
               <span className="text-xs text-muted-foreground font-medium">{selectedAnnotation} (click to exclude):</span>
               {Object.entries(userAnnotationColors).map(([value, color]) => {
