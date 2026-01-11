@@ -13,10 +13,10 @@ import {
   Line
 } from "recharts";
 import { useMemo, useRef, useState } from "react";
-import { Download, FileSpreadsheet, Database, Calculator, Trash2, TrendingUp } from "lucide-react";
+import { Download, FileSpreadsheet, Database, Calculator, Trash2, TrendingUp, ArrowLeftRight, BarChart3 } from "lucide-react";
 import { downloadChartAsPNG, downloadRechartsAsSVG } from "@/lib/chartExport";
 import { logRankTest, formatPValue } from "@/lib/logRankTest";
-import { estimateCoxPH, formatHR, CoxPHResult, stratifiedCoxPH, StratifiedCoxPHResult, multivariateCoxPH, MultivariateCoxPHResult, stepwiseModelComparison, ModelComparisonResult, backwardElimination, BackwardEliminationResult, forwardSelection, ForwardSelectionResult } from "@/lib/coxphAnalysis";
+import { estimateCoxPH, formatHR, CoxPHResult, stratifiedCoxPH, StratifiedCoxPHResult, multivariateCoxPH, MultivariateCoxPHResult, stepwiseModelComparison, ModelComparisonResult, backwardElimination, BackwardEliminationResult, forwardSelection, ForwardSelectionResult, stepwiseSelection, StepwiseSelectionResult, crossValidateConcordance, CrossValidationResult } from "@/lib/coxphAnalysis";
 import { CoxPHResultFromJSON } from "@/components/bioinformatics/JsonUploader";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -29,6 +29,8 @@ import { CovariateSelector } from "@/components/bioinformatics/CovariateSelector
 import { ModelComparisonPanel } from "@/components/bioinformatics/ModelComparisonPanel";
 import { BackwardEliminationPanel } from "@/components/bioinformatics/BackwardEliminationPanel";
 import { ForwardSelectionPanel } from "@/components/bioinformatics/ForwardSelectionPanel";
+import { StepwiseSelectionPanel } from "@/components/bioinformatics/StepwiseSelectionPanel";
+import { CrossValidationPanel } from "@/components/bioinformatics/CrossValidationPanel";
 
 export interface SurvivalTimePoint {
   time: number;
@@ -317,6 +319,12 @@ export const SurvivalCurve = ({
   // Forward selection result
   const [forwardSelectionResult, setForwardSelectionResult] = useState<ForwardSelectionResult | null>(null);
 
+  // Stepwise selection result
+  const [stepwiseSelectionResult, setStepwiseSelectionResult] = useState<StepwiseSelectionResult | null>(null);
+
+  // Cross-validation result
+  const [crossValidationResult, setCrossValidationResult] = useState<CrossValidationResult | null>(null);
+
   const runBackwardElimination = () => {
     if (selectedCovariates.length < 2 || !userAnnotations || !sampleSubtypes) {
       return;
@@ -337,6 +345,7 @@ export const SurvivalCurve = ({
     const result = backwardElimination(data, covariateData, sampleSubtypes, selectedCovariates, subtypeCounts, 0.05);
     setBackwardEliminationResult(result);
     setForwardSelectionResult(null);
+    setStepwiseSelectionResult(null);
   };
 
   const runForwardSelection = () => {
@@ -359,16 +368,69 @@ export const SurvivalCurve = ({
     const result = forwardSelection(data, covariateData, sampleSubtypes, annotationColumns, subtypeCounts, 0.05);
     setForwardSelectionResult(result);
     setBackwardEliminationResult(null);
+    setStepwiseSelectionResult(null);
+  };
+
+  const runStepwiseSelection = () => {
+    if (annotationColumns.length < 1 || !userAnnotations || !sampleSubtypes) {
+      return;
+    }
+
+    const covariateData: Record<string, Record<string, string | number>> = {};
+    
+    annotationColumns.forEach(covariate => {
+      covariateData[covariate] = {};
+      Object.entries(userAnnotations.annotations).forEach(([sampleId, cols]) => {
+        const value = cols[covariate];
+        if (value !== undefined && value !== null && value !== '') {
+          covariateData[covariate][sampleId] = value;
+        }
+      });
+    });
+
+    const result = stepwiseSelection(data, covariateData, sampleSubtypes, annotationColumns, subtypeCounts, 0.05, 0.10);
+    setStepwiseSelectionResult(result);
+    setForwardSelectionResult(null);
+    setBackwardEliminationResult(null);
+  };
+
+  const runCrossValidation = () => {
+    if (selectedCovariates.length < 1 || !userAnnotations || !sampleSubtypes) {
+      return;
+    }
+
+    const covariateData: Record<string, Record<string, string | number>> = {};
+    
+    selectedCovariates.forEach(covariate => {
+      covariateData[covariate] = {};
+      Object.entries(userAnnotations.annotations).forEach(([sampleId, cols]) => {
+        const value = cols[covariate];
+        if (value !== undefined && value !== null && value !== '') {
+          covariateData[covariate][sampleId] = value;
+        }
+      });
+    });
+
+    const result = crossValidateConcordance(data, covariateData, sampleSubtypes, selectedCovariates, subtypeCounts, 5);
+    setCrossValidationResult(result);
   };
 
   const applyBackwardEliminationResult = (covariates: string[]) => {
     setSelectedCovariates(covariates);
     setBackwardEliminationResult(null);
+    setCrossValidationResult(null);
   };
 
   const applyForwardSelectionResult = (covariates: string[]) => {
     setSelectedCovariates(covariates);
     setForwardSelectionResult(null);
+    setCrossValidationResult(null);
+  };
+
+  const applyStepwiseSelectionResult = (covariates: string[]) => {
+    setSelectedCovariates(covariates);
+    setStepwiseSelectionResult(null);
+    setCrossValidationResult(null);
   };
 
   const toggleCovariate = (covariate: string) => {
@@ -379,24 +441,32 @@ export const SurvivalCurve = ({
     );
     setBackwardEliminationResult(null);
     setForwardSelectionResult(null);
+    setStepwiseSelectionResult(null);
+    setCrossValidationResult(null);
   };
 
   const selectAllCovariates = () => {
     setSelectedCovariates([...annotationColumns]);
     setBackwardEliminationResult(null);
     setForwardSelectionResult(null);
+    setStepwiseSelectionResult(null);
+    setCrossValidationResult(null);
   };
 
   const clearAllCovariates = () => {
     setSelectedCovariates([]);
     setBackwardEliminationResult(null);
     setForwardSelectionResult(null);
+    setStepwiseSelectionResult(null);
+    setCrossValidationResult(null);
   };
 
   const reorderCovariates = (newOrder: string[]) => {
     setSelectedCovariates(newOrder);
     setBackwardEliminationResult(null);
     setForwardSelectionResult(null);
+    setStepwiseSelectionResult(null);
+    setCrossValidationResult(null);
   };
 
   // Export survival statistics as CSV/TSV
@@ -814,7 +884,7 @@ export const SurvivalCurve = ({
                         onClick={runForwardSelection}
                       >
                         <TrendingUp className="h-3.5 w-3.5 mr-1" />
-                        Forward Selection
+                        Forward
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
@@ -835,11 +905,53 @@ export const SurvivalCurve = ({
                           onClick={runBackwardElimination}
                         >
                           <Trash2 className="h-3.5 w-3.5 mr-1" />
-                          Backward Elimination
+                          Backward
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent>
                         <p>Remove non-significant covariates (p &gt; 0.05) iteratively</p>
+                      </TooltipContent>
+                    </UITooltip>
+                  </TooltipProvider>
+                )}
+
+                {/* Stepwise Selection */}
+                <TooltipProvider>
+                  <UITooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={runStepwiseSelection}
+                      >
+                        <ArrowLeftRight className="h-3.5 w-3.5 mr-1" />
+                        Stepwise
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Combine forward and backward steps for optimal model</p>
+                    </TooltipContent>
+                  </UITooltip>
+                </TooltipProvider>
+
+                {/* Cross-Validation */}
+                {selectedCovariates.length >= 1 && (
+                  <TooltipProvider>
+                    <UITooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs"
+                          onClick={runCrossValidation}
+                        >
+                          <BarChart3 className="h-3.5 w-3.5 mr-1" />
+                          5-fold CV
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Estimate out-of-sample concordance with 5-fold cross-validation</p>
                       </TooltipContent>
                     </UITooltip>
                   </TooltipProvider>
@@ -1260,20 +1372,14 @@ export const SurvivalCurve = ({
       />
     )}
 
-    {/* Multivariate Cox Regression Results */}
-    {multivariateResult && (
-      <>
-        <MultivariateForestPlot result={multivariateResult} />
-        <MultivariateResultsTable result={multivariateResult} />
-      </>
+    {/* Selection Results - BEFORE Forest Plots */}
+    {forwardSelectionResult && (
+      <ForwardSelectionPanel 
+        result={forwardSelectionResult} 
+        onApplyFinal={applyForwardSelectionResult}
+      />
     )}
 
-    {/* Nested Model Comparison */}
-    {modelComparisons.length > 0 && (
-      <ModelComparisonPanel comparisons={modelComparisons} />
-    )}
-
-    {/* Backward Elimination Results */}
     {backwardEliminationResult && (
       <BackwardEliminationPanel 
         result={backwardEliminationResult} 
@@ -1281,12 +1387,29 @@ export const SurvivalCurve = ({
       />
     )}
 
-    {/* Forward Selection Results */}
-    {forwardSelectionResult && (
-      <ForwardSelectionPanel 
-        result={forwardSelectionResult} 
-        onApplyFinal={applyForwardSelectionResult}
+    {stepwiseSelectionResult && (
+      <StepwiseSelectionPanel 
+        result={stepwiseSelectionResult} 
+        onApplyFinal={applyStepwiseSelectionResult}
       />
+    )}
+
+    {/* Nested Model Comparison */}
+    {modelComparisons.length > 0 && (
+      <ModelComparisonPanel comparisons={modelComparisons} />
+    )}
+
+    {/* Cross-Validation Results */}
+    {crossValidationResult && crossValidationResult.concordanceScores.length > 0 && (
+      <CrossValidationPanel result={crossValidationResult} selectedCovariates={selectedCovariates} />
+    )}
+
+    {/* Multivariate Cox Regression Results */}
+    {multivariateResult && (
+      <>
+        <MultivariateForestPlot result={multivariateResult} />
+        <MultivariateResultsTable result={multivariateResult} />
+      </>
     )}
   </div>
   );

@@ -262,6 +262,13 @@ const Index = () => {
           />
         </div>
 
+        {/* Marker Genes - Full Width (now below heatmap) */}
+        <MarkerGenesTable 
+          genes={data.markerGenes} 
+          subtypeColors={subtypeColors}
+          genesPerSubtype={markerGenesPerSubtype}
+        />
+
         {/* Clustering Metrics - Full Width */}
         <ClusteringMetrics samples={data.samples} />
 
@@ -277,13 +284,6 @@ const Index = () => {
             sampleSubtypes={sampleSubtypes}
           />
         </div>
-
-        {/* Marker Genes - Full Width */}
-        <MarkerGenesTable 
-          genes={data.markerGenes} 
-          subtypeColors={subtypeColors}
-          genesPerSubtype={markerGenesPerSubtype}
-        />
       </main>
 
       {/* Footer */}
