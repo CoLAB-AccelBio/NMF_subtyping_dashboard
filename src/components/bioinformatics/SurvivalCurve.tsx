@@ -1,9 +1,11 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, ReferenceDot } from "recharts";
 import { useMemo, useRef } from "react";
 import { Download } from "lucide-react";
 import { downloadChartAsPNG, downloadRechartsAsSVG } from "@/lib/chartExport";
+import { logRankTest, formatPValue } from "@/lib/logRankTest";
 
 export interface SurvivalData {
   subtype: string;
@@ -41,6 +43,11 @@ export const SurvivalCurve = ({ data, subtypeColors }: SurvivalCurveProps) => {
   const handleDownloadSVG = () => {
     downloadRechartsAsSVG(chartRef.current, "survival-curve");
   };
+
+  // Calculate log-rank test p-value
+  const logRankResult = useMemo(() => {
+    return logRankTest(data);
+  }, [data]);
 
   // Transform data into step-function format for proper Kaplan-Meier display
   const { chartData, eventMarkers } = useMemo(() => {
@@ -107,7 +114,17 @@ export const SurvivalCurve = ({ data, subtypeColors }: SurvivalCurveProps) => {
   return (
     <Card className="border-0 bg-card/50 backdrop-blur-sm">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-lg">Kaplan-Meier Survival Curves</CardTitle>
+        <div className="flex items-center gap-3">
+          <CardTitle className="text-lg">Kaplan-Meier Survival Curves</CardTitle>
+          {logRankResult && (
+            <Badge 
+              variant={logRankResult.pValue < 0.05 ? "default" : "secondary"}
+              className={logRankResult.pValue < 0.05 ? "bg-green-600 hover:bg-green-700" : ""}
+            >
+              Log-rank: {formatPValue(logRankResult.pValue)}
+            </Badge>
+          )}
+        </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={handleDownloadPNG}>
             <Download className="h-4 w-4 mr-1" />

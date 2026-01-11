@@ -3,22 +3,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MarkerGene } from "@/data/mockNmfData";
 import { useState, useMemo } from "react";
-import { Download, Minus, Plus } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Download } from "lucide-react";
 
 interface MarkerGenesTableProps {
   genes: MarkerGene[];
   subtypeColors: Record<string, string>;
   genesPerSubtype?: number;
-  onGenesPerSubtypeChange?: (count: number) => void;
 }
 
 export const MarkerGenesTable = ({ 
   genes, 
   subtypeColors, 
   genesPerSubtype = 25,
-  onGenesPerSubtypeChange 
 }: MarkerGenesTableProps) => {
   const [selectedSubtype, setSelectedSubtype] = useState<string | null>(null);
   
@@ -58,25 +54,6 @@ export const MarkerGenesTable = ({
   }, [selectedSubtype, limitedGenes, subtypes]);
 
   const displayGenes = filteredGenes.slice(0, 20);
-
-  const handleIncrement = () => {
-    if (onGenesPerSubtypeChange) {
-      onGenesPerSubtypeChange(Math.min(genesPerSubtype + 5, 100));
-    }
-  };
-
-  const handleDecrement = () => {
-    if (onGenesPerSubtypeChange) {
-      onGenesPerSubtypeChange(Math.max(genesPerSubtype - 5, 5));
-    }
-  };
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value, 10);
-    if (!isNaN(value) && onGenesPerSubtypeChange) {
-      onGenesPerSubtypeChange(Math.min(Math.max(value, 5), 100));
-    }
-  };
 
   const exportToCSV = () => {
     const header = ["Gene", "Subtype", "Weight"];
@@ -142,53 +119,15 @@ export const MarkerGenesTable = ({
             ))}
           </div>
         </div>
-        <div className="flex flex-col gap-2 items-end">
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={exportToCSV}>
-              <Download className="h-4 w-4 mr-1" />
-              CSV
-            </Button>
-            <Button variant="outline" size="sm" onClick={exportToTSV}>
-              <Download className="h-4 w-4 mr-1" />
-              TSV
-            </Button>
-          </div>
-          {onGenesPerSubtypeChange && (
-            <div className="flex items-center gap-2">
-              <Label htmlFor="genes-per-subtype" className="text-xs text-muted-foreground whitespace-nowrap">
-                Genes/subtype:
-              </Label>
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={handleDecrement}
-                  disabled={genesPerSubtype <= 5}
-                >
-                  <Minus className="h-3 w-3" />
-                </Button>
-                <Input
-                  id="genes-per-subtype"
-                  type="number"
-                  min={5}
-                  max={100}
-                  value={genesPerSubtype}
-                  onChange={handleInputChange}
-                  className="h-7 w-14 text-center text-sm"
-                />
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={handleIncrement}
-                  disabled={genesPerSubtype >= 100}
-                >
-                  <Plus className="h-3 w-3" />
-                </Button>
-              </div>
-            </div>
-          )}
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={exportToCSV}>
+            <Download className="h-4 w-4 mr-1" />
+            CSV
+          </Button>
+          <Button variant="outline" size="sm" onClick={exportToTSV}>
+            <Download className="h-4 w-4 mr-1" />
+            TSV
+          </Button>
         </div>
       </CardHeader>
       <CardContent>
