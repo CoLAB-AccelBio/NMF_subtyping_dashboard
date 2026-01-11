@@ -123,10 +123,36 @@ export const getSVGAsString = (
 ): string | null => {
   if (!containerElement) return null;
 
-  const svgElement = containerElement.querySelector('svg');
-  if (!svgElement) return null;
+  // Find the chart SVG specifically - look for Recharts container or the largest SVG
+  // Avoid icon SVGs (small, typically in buttons) by checking size and context
+  const allSvgs = containerElement.querySelectorAll('svg');
+  let chartSvg: SVGElement | null = null;
+  let maxArea = 0;
 
-  const clonedSvg = svgElement.cloneNode(true) as SVGElement;
+  allSvgs.forEach((svg) => {
+    // Skip SVGs inside buttons (likely icons)
+    if (svg.closest('button')) return;
+    
+    // Skip very small SVGs (icons are typically < 32px)
+    const width = svg.getBoundingClientRect().width;
+    const height = svg.getBoundingClientRect().height;
+    const area = width * height;
+    
+    // Look for the largest SVG that's not an icon
+    if (width > 50 && height > 50 && area > maxArea) {
+      maxArea = area;
+      chartSvg = svg as SVGElement;
+    }
+  });
+
+  // Fallback: try to find SVG in recharts-wrapper or similar chart containers
+  if (!chartSvg) {
+    chartSvg = containerElement.querySelector('.recharts-wrapper svg') as SVGElement | null;
+  }
+
+  if (!chartSvg) return null;
+
+  const clonedSvg = chartSvg.cloneNode(true) as SVGElement;
   
   const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
   rect.setAttribute('width', '100%');
