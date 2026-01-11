@@ -13,10 +13,10 @@ import {
   Line
 } from "recharts";
 import { useMemo, useRef, useState } from "react";
-import { Download, FileSpreadsheet, Database, Calculator } from "lucide-react";
+import { Download, FileSpreadsheet, Database, Calculator, Trash2 } from "lucide-react";
 import { downloadChartAsPNG, downloadRechartsAsSVG } from "@/lib/chartExport";
 import { logRankTest, formatPValue } from "@/lib/logRankTest";
-import { estimateCoxPH, formatHR, CoxPHResult, stratifiedCoxPH, StratifiedCoxPHResult, multivariateCoxPH, MultivariateCoxPHResult } from "@/lib/coxphAnalysis";
+import { estimateCoxPH, formatHR, CoxPHResult, stratifiedCoxPH, StratifiedCoxPHResult, multivariateCoxPH, MultivariateCoxPHResult, stepwiseModelComparison, ModelComparisonResult, backwardElimination, BackwardEliminationResult } from "@/lib/coxphAnalysis";
 import { CoxPHResultFromJSON } from "@/components/bioinformatics/JsonUploader";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -26,6 +26,8 @@ import { StratumResultsTable } from "@/components/bioinformatics/StratumResultsT
 import { MultivariateResultsTable } from "@/components/bioinformatics/MultivariateResultsTable";
 import { MultivariateForestPlot } from "@/components/bioinformatics/MultivariateForestPlot";
 import { CovariateSelector } from "@/components/bioinformatics/CovariateSelector";
+import { ModelComparisonPanel } from "@/components/bioinformatics/ModelComparisonPanel";
+import { BackwardEliminationPanel } from "@/components/bioinformatics/BackwardEliminationPanel";
 
 export interface SurvivalTimePoint {
   time: number;
@@ -287,24 +289,78 @@ export const SurvivalCurve = ({
     return multivariateCoxPH(data, covariateData, sampleSubtypes, subtypeCounts);
   }, [selectedCovariates, userAnnotations, sampleSubtypes, data, subtypeCounts]);
 
+  // Stepwise model comparison using likelihood ratio tests
+  const modelComparisons = useMemo((): ModelComparisonResult[] => {
+    if (selectedCovariates.length < 2 || !userAnnotations || !sampleSubtypes) {
+      return [];
+    }
+
+    const covariateData: Record<string, Record<string, string | number>> = {};
+    
+    selectedCovariates.forEach(covariate => {
+      covariateData[covariate] = {};
+      Object.entries(userAnnotations.annotations).forEach(([sampleId, cols]) => {
+        const value = cols[covariate];
+        if (value !== undefined && value !== null && value !== '') {
+          covariateData[covariate][sampleId] = value;
+        }
+      });
+    });
+
+    return stepwiseModelComparison(data, covariateData, sampleSubtypes, selectedCovariates, subtypeCounts);
+  }, [selectedCovariates, userAnnotations, sampleSubtypes, data, subtypeCounts]);
+
+  // Backward elimination result
+  const [backwardEliminationResult, setBackwardEliminationResult] = useState<BackwardEliminationResult | null>(null);
+
+  const runBackwardElimination = () => {
+    if (selectedCovariates.length < 2 || !userAnnotations || !sampleSubtypes) {
+      return;
+    }
+
+    const covariateData: Record<string, Record<string, string | number>> = {};
+    
+    selectedCovariates.forEach(covariate => {
+      covariateData[covariate] = {};
+      Object.entries(userAnnotations.annotations).forEach(([sampleId, cols]) => {
+        const value = cols[covariate];
+        if (value !== undefined && value !== null && value !== '') {
+          covariateData[covariate][sampleId] = value;
+        }
+      });
+    });
+
+    const result = backwardElimination(data, covariateData, sampleSubtypes, selectedCovariates, subtypeCounts, 0.05);
+    setBackwardEliminationResult(result);
+  };
+
+  const applyBackwardEliminationResult = (covariates: string[]) => {
+    setSelectedCovariates(covariates);
+    setBackwardEliminationResult(null);
+  };
+
   const toggleCovariate = (covariate: string) => {
     setSelectedCovariates(prev => 
       prev.includes(covariate) 
         ? prev.filter(c => c !== covariate)
         : [...prev, covariate]
     );
+    setBackwardEliminationResult(null);
   };
 
   const selectAllCovariates = () => {
     setSelectedCovariates([...annotationColumns]);
+    setBackwardEliminationResult(null);
   };
 
   const clearAllCovariates = () => {
     setSelectedCovariates([]);
+    setBackwardEliminationResult(null);
   };
 
   const reorderCovariates = (newOrder: string[]) => {
     setSelectedCovariates(newOrder);
+    setBackwardEliminationResult(null);
   };
 
   // Export survival statistics as CSV/TSV
@@ -701,14 +757,36 @@ export const SurvivalCurve = ({
 
             {/* Multivariate Covariates Selector */}
             {annotationColumns.length > 0 && groupBy === "nmf_subtype" && (
-              <CovariateSelector
-                columns={annotationColumns}
-                selectedCovariates={selectedCovariates}
-                onToggle={toggleCovariate}
-                onSelectAll={selectAllCovariates}
-                onClearAll={clearAllCovariates}
-                onReorder={reorderCovariates}
-              />
+              <div className="flex items-center gap-2">
+                <CovariateSelector
+                  columns={annotationColumns}
+                  selectedCovariates={selectedCovariates}
+                  onToggle={toggleCovariate}
+                  onSelectAll={selectAllCovariates}
+                  onClearAll={clearAllCovariates}
+                  onReorder={reorderCovariates}
+                />
+                {selectedCovariates.length >= 2 && (
+                  <TooltipProvider>
+                    <UITooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs"
+                          onClick={runBackwardElimination}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 mr-1" />
+                          Backward Elimination
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Remove non-significant covariates (p &gt; 0.05) iteratively</p>
+                      </TooltipContent>
+                    </UITooltip>
+                  </TooltipProvider>
+                )}
+              </div>
             )}
             
             {logRankResult && (
@@ -1130,6 +1208,19 @@ export const SurvivalCurve = ({
         <MultivariateForestPlot result={multivariateResult} />
         <MultivariateResultsTable result={multivariateResult} />
       </>
+    )}
+
+    {/* Nested Model Comparison */}
+    {modelComparisons.length > 0 && (
+      <ModelComparisonPanel comparisons={modelComparisons} />
+    )}
+
+    {/* Backward Elimination Results */}
+    {backwardEliminationResult && (
+      <BackwardEliminationPanel 
+        result={backwardEliminationResult} 
+        onApplyFinal={applyBackwardEliminationResult}
+      />
     )}
   </div>
   );
