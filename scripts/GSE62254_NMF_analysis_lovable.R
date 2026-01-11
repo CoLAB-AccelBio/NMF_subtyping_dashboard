@@ -21,11 +21,43 @@ library(survival)
 library(jsonlite)
 
 # ========== DOWNLOAD DATA ==========
-geo_id <- "GSE62254"
+#geo_id <- "GSE62254"
+geo_id <- NULL
+dataset = "GSE62254"
+expr_file <- "/Users/jacek_marzec/Library/CloudStorage/OneDrive-SharedLibraries-AssociaçãoAccelbio/AccelBio Central Hub - Projects_gastric_cancer/data/GSE62254/GSE62254_normalised_annot.txt"
+samples_annot_file <- "/Users/jacek_marzec/Library/CloudStorage/OneDrive-SharedLibraries-AssociaçãoAccelbio/AccelBio Central Hub - Projects_gastric_cancer/data/GSE62254/target_GSE62254.txt"
 
-gse <- getGEO(geo_id, GSEMatrix = TRUE)[[1]]
-expr_data <- exprs(gse)
-pheno_data <- pData(gse)
+if ( !is.null(geo_id) ) {
+  
+  ##### Get data from GEO
+  gse <- getGEO(geo_id, GSEMatrix = TRUE)[[1]]
+  expr_data <- exprs(gse)
+  samples_annot <- pData(gse)
+  
+} else if ( !is.null(expr_file) ) {
+  
+  ##### Use provided data
+  expr_data <- read.table(expr_file, header = TRUE, row.names = 1, sep = "\t")
+  expr_data = as.matrix(expr_data)
+}
+
+if ( !is.null(samples_annot_file) ) {
+  
+  ##### Use provided samples annotation
+  samples_annot <- read.table(samples_annot_file, header = TRUE, row.names = 1, sep = "\t")
+  
+} else {
+  samples_annot <- NULL
+}
+
+##### Make names R-friendly
+colnames(expr_data) <- make.names(colnames(expr_data))
+rownames(samples_annot) <- make.names(rownames(samples_annot))
+
+##### Make sure that samples order in both the input data and annotation file are the same
+samples_annot <- samples_annot[ colnames(expr_data) , ]
+expr_data <- expr_data[ , rownames(samples_annot) ]
+
 
 # Log-transform if needed
 if (max(expr_data, na.rm = TRUE) > 50) {
@@ -50,6 +82,11 @@ ranks <- rank_min:rank_max
 rank_range <- rank_min:rank_max
 estim <- nmfEstimateRank(expr_nmf, range = rank_range, method = "brunet", nrun = 10, seed = 123)
 
+# Select optimal rank (typically where cophenetic correlation peaks)
+metrics <- estim$measures
+optimal_rank <- which.max(metrics$cophenetic) + 1  # +1 because range starts at 2
+
+
 # Extract rank metrics
 rank_metrics <- data.frame(
   rank = rank_range,
@@ -69,12 +106,39 @@ nmf_result <- nmf(expr_nmf, rank = optimal_rank, method = "brunet", nrun = 30, s
 H <- coef(nmf_result)
 sample_subtypes <- paste0("Subtype_", apply(H, 2, which.max))
 
+
+# Calculate silhouette scores for cluster quality
+silhouette_scores <- silhouette(nmf_result)
+
+# Add coefficient scores
+for (i in 1:optimal_rank) {
+  samples_annot[[paste0("score_subtype_", i)]] <- H[i, ]
+}
+
+# Add subtype info to samples annotation
+samples_annot <- cbind(samples_annot, sample_subtypes)
+
+# Save updated samples annotation file
+samples_annot_out <- cbind(
+  Sample_name = rownames(samples_annot),
+  samples_annot
+)
+
+write.table(
+  samples_annot_out,
+  file = "samples_annotation.tsv",
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+
 # Get marker genes (basis matrix)
 W <- basis(nmf_result)
 marker_genes <- list()
 for (k in 1:optimal_rank) {
   gene_weights <- W[, k]
-  top_idx <- order(gene_weights, decreasing = TRUE)[1:100]  # Get top 100 per subtype
+  top_idx <- order(gene_weights, decreasing = TRUE)[1:50]
   for (i in top_idx) {
     marker_genes <- append(marker_genes, list(list(
       gene = rownames(W)[i],
@@ -84,20 +148,46 @@ for (k in 1:optimal_rank) {
   }
 }
 
+
+# ========== NMF Visualizations ==========
+
+# Plot rank estimation metrics
+pdf("nmf_rank_estimation.pdf", width = 10, height = 6)
+plot(estim)
+dev.off()
+
+# Consensus heatmap
+pdf("nmf_consensus_heatmap.pdf", width = 10, height = 10)
+consensusmap(nmf_result, annCol = list(Subtype = as.factor(sample_subtypes)))
+dev.off()
+
+# Basis heatmap (top genes per subtype)
+pdf("nmf_basis_heatmap.pdf", width = 12, height = 10)
+basismap(nmf_result, Rowv = TRUE, Colv = NA)
+dev.off()
+
+# Coefficient heatmap
+pdf("nmf_coef_heatmap.pdf", width = 14, height = 6)
+coefmap(nmf_result, Colv = "consensus")
+dev.off()
+
 # ========== SURVIVAL ANALYSIS ==========
 cat("Performing survival analysis...\n")
 
 # Extract survival data from phenotype (adjust column names as needed)
 # Common column names: "death from disease:ch1", "overall survival months:ch1"
-surv_time_col <- grep("survival|time|months", colnames(pheno_data), value = TRUE, ignore.case = TRUE)[1]
-surv_event_col <- grep("death|status|event", colnames(pheno_data), value = TRUE, ignore.case = TRUE)[1]
+#surv_time_col <- grep("survival|time|months", colnames(samples_annot), value = TRUE, ignore.case = TRUE)[1]
+surv_time_col <- grep("DFS.m", colnames(samples_annot), value = TRUE, ignore.case = TRUE)[1]
+#surv_event_col <- grep("death|recur|status|event", colnames(samples_annot), value = TRUE, ignore.case = TRUE)[1]
+surv_event_col <- grep("recur", colnames(samples_annot), value = TRUE, ignore.case = TRUE)[1]
+
 
 if (!is.na(surv_time_col) && !is.na(surv_event_col)) {
-  surv_time <- as.numeric(pheno_data[[surv_time_col]])
-  surv_event <- pheno_data[[surv_event_col]]
+  surv_time <- as.numeric(samples_annot[[surv_time_col]])
+  surv_event <- samples_annot[[surv_event_col]]
   
   # Convert event to binary (1 = event occurred)
-  surv_event <- ifelse(grepl("yes|1|dead|death", surv_event, ignore.case = TRUE), 1, 0)
+  surv_event <- ifelse(grepl("yes|1|dead|death|recur", surv_event, ignore.case = TRUE), 1, 0)
   
   # Calculate log-rank p-value
   surv_formula <- Surv(surv_time, surv_event) ~ factor(sample_subtypes)
@@ -178,6 +268,33 @@ if (!is.na(surv_time_col) && !is.na(surv_event_col)) {
   )
   raw_survival <- raw_survival[!is.na(raw_survival$time), ]
   
+  # Generate Kaplan–Meier plot
+  pdf("kaplan–meier_plot.pdf", width = 14, height = 8)
+  plot(
+    fit,
+    col = 1:length(levels(factor(sample_subtypes))),
+    lwd = 2,
+    xlab = "Time",
+    ylab = "Survival probability",
+    mark.time = TRUE
+  )
+  
+  legend(
+    "bottomleft",
+    legend = levels(factor(sample_subtypes)),
+    col = 1:length(levels(factor(sample_subtypes))),
+    lwd = 2,
+    bty = "n"
+  )
+  
+  # Add p-value
+  text(
+    x = max(surv_time) * 0.6,
+    y = 0.2,
+    labels = paste0("Log-rank p = ", signif(pvalue, 3))
+  )
+  dev.off()
+  
 } else {
   cat("Survival columns not found. Generating placeholder data.\n")
   survival_data <- lapply(unique(sample_subtypes), function(st) {
@@ -205,36 +322,62 @@ if (!is.na(surv_time_col) && !is.na(surv_event_col)) {
   raw_survival <- NULL
 }
 
+
 # ========== PREPARE HEATMAP DATA ==========
-top_marker_genes <- unique(sapply(marker_genes[1:min(100, length(marker_genes))], function(x) x$gene))
-# Filter to genes that exist in the expression matrix
-top_marker_genes <- intersect(top_marker_genes, rownames(expr_filtered))
+
+# ---------- Select marker genes ----------
+top_marker_genes <- unique(sapply(marker_genes, function(x) x$gene))
 heatmap_expr <- expr_filtered[top_marker_genes, ]
 
-heatmap_data <- list(
-  genes = rownames(heatmap_expr),
-  samples = colnames(heatmap_expr),
+
+# Keep only marker genes present in matrix
+genes_used <- intersect(top_marker_genes, rownames(expr_data))
+
+# ---------- Align samples ----------
+sample_ids <- colnames(expr_data)
+sample_ids <- intersect(sample_ids, colnames(expr_data))
+
+# Subset matrix
+expr_sub <- expr_data[genes_used, sample_ids, drop = FALSE]
+
+# ---------- Build heatmapData ----------
+heatmapData <- list(
+  genes = genes_used,
+  samples = sample_ids,
   sampleSubtypes = sample_subtypes,
-  values = lapply(1:nrow(heatmap_expr), function(i) as.numeric(heatmap_expr[i, ]))
+  values = apply(expr_sub, 1, as.numeric)
 )
 
-# ========== PREPARE SAMPLE RESULTS ==========
-sample_results <- lapply(1:ncol(H), function(i) {
-  result <- list(
-    sample_id = colnames(H)[i],
-    subtype = sample_subtypes[i]
-  )
-  # Add score for each subtype
-  for (k in 1:nrow(H)) {
-    result[[paste0("score_subtype_", k)]] <- round(H[k, i], 4)
-  }
-  result
-})
+# Ensure values is genes x samples
+heatmapData$values <- unname(lapply(seq_len(nrow(expr_sub)), function(i) {
+  as.numeric(expr_sub[i, ])
+}))
+
+# Export expression matrix for heatmap (top 200 variable genes)
+top_200 <- names(sort(gene_vars, decreasing = TRUE)[1:200])
+heatmap_data <- expr_data[top_200, ]
+write.table(heatmap_data, "heatmap_expression_matrix.tsv", sep = "\t")
+
+
+# ========== Export Sample Results for Dashboard ==========
+
+# Sample-level results
+sample_results <- data.frame(
+  sample_id = colnames(nmf_result),
+  subtype = sample_subtypes,
+  stringsAsFactors = FALSE
+)
+
+# Add coefficient scores
+for (i in 1:optimal_rank) {
+  sample_results[[paste0("score_subtype_", i)]] <- H[i, ]
+}
 
 # ========== BUILD OUTPUT JSON ==========
+# Build result list conditionally
 result <- list(
   summary = list(
-    dataset = geo_id,
+    dataset = dataset,
     n_samples = ncol(expr_data),
     n_genes = nrow(expr_data),
     n_subtypes = optimal_rank,
@@ -247,7 +390,7 @@ result <- list(
   sampleResults = sample_results,
   markerGenes = marker_genes,
   survivalData = survival_data,
-  heatmapData = heatmap_data
+  heatmapData = heatmapData
 )
 
 # Add p-value only if it exists
@@ -272,8 +415,14 @@ if (!is.null(raw_survival)) {
   })
 }
 
+
 # ========== SAVE OUTPUT ==========
 jsonlite::write_json(result, "nmf_results.json", pretty = TRUE, auto_unbox = TRUE)
+
+# Export to JSON for dashboard
+jsonlite::write_json(sample_results, "nmf_sample_results.json", pretty = TRUE)
+jsonlite::write_json(marker_genes, "nmf_marker_genes.json", pretty = TRUE)
+jsonlite::write_json(summary_stats, "nmf_summary.json", pretty = TRUE)
 
 cat("\n✅ Results saved to nmf_results.json\n")
 cat("Upload this file to the dashboard to visualize results.\n")
@@ -282,3 +431,5 @@ cat(sprintf("  Log-rank p-value: %g\n", pvalue))
 if (!is.null(cox_results)) {
   cat(sprintf("  Cox PH Wald test p-value: %g\n", cox_results$waldTest$pValue))
 }
+
+
