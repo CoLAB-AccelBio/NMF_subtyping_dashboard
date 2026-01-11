@@ -118,6 +118,13 @@ const Index = () => {
     return markerGenesPerSubtype * data.summary.n_subtypes;
   }, [markerGenesPerSubtype, data.summary.n_subtypes]);
 
+  // Create sample to subtype mapping for survival analysis
+  const sampleSubtypes = useMemo(() => {
+    const map: Record<string, string> = {};
+    data.samples.forEach(s => { map[s.sample_id] = s.subtype; });
+    return map;
+  }, [data.samples]);
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -272,6 +279,8 @@ const Index = () => {
             subtypeCounts={data.summary.subtype_counts}
             survivalPValue={data.survival_pvalue}
             coxPHResults={data.coxPHResults}
+            userAnnotations={userAnnotations}
+            sampleSubtypes={sampleSubtypes}
           />
         </div>
 

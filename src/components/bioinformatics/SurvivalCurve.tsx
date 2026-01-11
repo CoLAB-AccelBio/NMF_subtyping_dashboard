@@ -12,13 +12,16 @@ import {
   ReferenceLine,
   Line
 } from "recharts";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Download, FileSpreadsheet, Database, Calculator } from "lucide-react";
 import { downloadChartAsPNG, downloadRechartsAsSVG } from "@/lib/chartExport";
 import { logRankTest, formatPValue } from "@/lib/logRankTest";
 import { estimateCoxPH, formatHR, CoxPHResult } from "@/lib/coxphAnalysis";
 import { CoxPHResultFromJSON } from "@/components/bioinformatics/JsonUploader";
 import { Tooltip as UITooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { AnnotationData } from "@/components/bioinformatics/AnnotationUploader";
+import { ForestPlot } from "@/components/bioinformatics/ForestPlot";
 
 export interface SurvivalTimePoint {
   time: number;
@@ -46,15 +49,42 @@ interface SurvivalCurveProps {
   // Pre-computed values from R (optional - will estimate if not provided)
   survivalPValue?: number;
   coxPHResults?: CoxPHResultFromJSON;
+  // User annotations for custom grouping
+  userAnnotations?: AnnotationData;
+  // Sample to subtype mapping for annotation-based analysis
+  sampleSubtypes?: Record<string, string>;
 }
+
+// Generate colors for annotation groups
+const generateAnnotationColors = (groups: string[]): Record<string, string> => {
+  const colorPalette = [
+    "hsl(210, 70%, 50%)", // Blue
+    "hsl(0, 70%, 50%)",   // Red
+    "hsl(120, 60%, 40%)", // Green
+    "hsl(45, 80%, 50%)",  // Orange
+    "hsl(280, 60%, 50%)", // Purple
+    "hsl(180, 60%, 45%)", // Teal
+    "hsl(330, 70%, 50%)", // Pink
+    "hsl(60, 70%, 45%)",  // Yellow
+  ];
+  
+  const colors: Record<string, string> = {};
+  groups.forEach((group, i) => {
+    colors[group] = colorPalette[i % colorPalette.length];
+  });
+  return colors;
+};
 
 export const SurvivalCurve = ({ 
   data, 
   subtypeColors, 
   subtypeCounts,
   survivalPValue,
-  coxPHResults 
+  coxPHResults,
+  userAnnotations,
+  sampleSubtypes
 }: SurvivalCurveProps) => {
+  const [groupBy, setGroupBy] = useState<string>("nmf_subtype");
   const chartRef = useRef<HTMLDivElement>(null);
 
   const handleDownloadPNG = () => {
@@ -65,27 +95,150 @@ export const SurvivalCurve = ({
     downloadRechartsAsSVG(chartRef.current, "survival-curve");
   };
 
+  // Get available annotation columns for grouping
+  const annotationColumns = useMemo(() => {
+    if (!userAnnotations) return [];
+    return userAnnotations.columns.filter(col => 
+      col !== 'sample_id' && col !== 'Sample_ID' && col !== 'SampleID'
+    );
+  }, [userAnnotations]);
+
+  // Calculate survival data based on selected grouping
+  const { effectiveData, effectiveColors, effectiveCounts, isAnnotationGrouping } = useMemo(() => {
+    // If grouping by NMF subtype or no annotations, use original data
+    if (groupBy === "nmf_subtype" || !userAnnotations || !sampleSubtypes) {
+      return { 
+        effectiveData: data, 
+        effectiveColors: subtypeColors, 
+        effectiveCounts: subtypeCounts,
+        isAnnotationGrouping: false
+      };
+    }
+
+    // Group samples by the selected annotation column
+    const annotationGroupMap = new Map<string, string[]>(); // group -> sample_ids
+    
+    // userAnnotations.annotations is Record<sampleId, Record<columnName, value>>
+    Object.entries(userAnnotations.annotations).forEach(([sampleId, cols]) => {
+      const groupValue = cols[groupBy];
+      
+      if (groupValue !== undefined && groupValue !== null && groupValue !== '') {
+        const groupStr = String(groupValue);
+        if (!annotationGroupMap.has(groupStr)) {
+          annotationGroupMap.set(groupStr, []);
+        }
+        annotationGroupMap.get(groupStr)!.push(sampleId);
+      }
+    });
+
+    // We need to reconstruct survival curves per annotation group
+    // For now, we'll create synthetic survival data by combining samples from the same annotation group
+    // This requires having access to individual sample survival times, which we approximate from the subtype curves
+    
+    const groupNames = Array.from(annotationGroupMap.keys()).sort();
+    const colors = generateAnnotationColors(groupNames);
+    const counts: Record<string, number> = {};
+    
+    // Build new survival data for each annotation group
+    const newSurvivalData: SurvivalData[] = groupNames.map(groupName => {
+      const sampleIds = annotationGroupMap.get(groupName) || [];
+      counts[groupName] = sampleIds.length;
+      
+      // Get the subtypes for samples in this annotation group
+      const subtypesInGroup: Record<string, number> = {};
+      sampleIds.forEach(sampleId => {
+        const subtype = sampleSubtypes[sampleId];
+        if (subtype) {
+          subtypesInGroup[subtype] = (subtypesInGroup[subtype] || 0) + 1;
+        }
+      });
+      
+      // Weight the survival curves by the proportion of each subtype in this group
+      // This is an approximation - ideal would be raw survival times per sample
+      const totalInGroup = Object.values(subtypesInGroup).reduce((a, b) => a + b, 0);
+      
+      if (totalInGroup === 0) {
+        return {
+          subtype: groupName,
+          nTotal: 0,
+          timePoints: [{ time: 0, survival: 1 }]
+        };
+      }
+      
+      // Get all unique time points across all subtypes
+      const allTimes = new Set<number>();
+      data.forEach(d => {
+        d.timePoints.forEach(tp => allTimes.add(tp.time));
+      });
+      const sortedTimes = Array.from(allTimes).sort((a, b) => a - b);
+      
+      // Weighted average survival at each time point
+      const timePoints: SurvivalTimePoint[] = sortedTimes.map(time => {
+        let weightedSurvival = 0;
+        let weightedStdErr = 0;
+        
+        Object.entries(subtypesInGroup).forEach(([subtype, count]) => {
+          const weight = count / totalInGroup;
+          const subtypeData = data.find(d => d.subtype === subtype);
+          if (subtypeData) {
+            // Find survival at this time (or interpolate)
+            const relevantPoints = subtypeData.timePoints.filter(tp => tp.time <= time);
+            if (relevantPoints.length > 0) {
+              const lastPoint = relevantPoints[relevantPoints.length - 1];
+              weightedSurvival += weight * lastPoint.survival;
+              if (lastPoint.stdErr) {
+                weightedStdErr += weight * lastPoint.stdErr;
+              }
+            } else {
+              weightedSurvival += weight * 1;
+            }
+          }
+        });
+        
+        return {
+          time,
+          survival: weightedSurvival,
+          stdErr: weightedStdErr > 0 ? weightedStdErr : undefined,
+          atRisk: Math.round(totalInGroup * weightedSurvival)
+        };
+      });
+      
+      return {
+        subtype: groupName,
+        nTotal: totalInGroup,
+        timePoints
+      };
+    }).filter(d => d.nTotal > 0);
+    
+    return { 
+      effectiveData: newSurvivalData, 
+      effectiveColors: colors, 
+      effectiveCounts: counts,
+      isAnnotationGrouping: true
+    };
+  }, [data, subtypeColors, subtypeCounts, groupBy, userAnnotations, sampleSubtypes]);
+
   // Track data source for statistics
-  const isPrecomputedPValue = survivalPValue !== undefined;
-  const isPrecomputedCoxPH = !!coxPHResults;
+  const isPrecomputedPValue = survivalPValue !== undefined && !isAnnotationGrouping;
+  const isPrecomputedCoxPH = !!coxPHResults && !isAnnotationGrouping;
 
   // Use pre-computed log-rank p-value from JSON if available, otherwise calculate
   const logRankResult = useMemo(() => {
-    if (survivalPValue !== undefined) {
+    if (survivalPValue !== undefined && !isAnnotationGrouping) {
       // Use the pre-computed p-value from R
       return { pValue: survivalPValue, chiSquare: 0, df: 0 };
     }
-    return logRankTest(data, subtypeCounts);
-  }, [data, subtypeCounts, survivalPValue]);
+    return logRankTest(effectiveData, effectiveCounts);
+  }, [effectiveData, effectiveCounts, survivalPValue, isAnnotationGrouping]);
 
   // Use pre-computed Cox PH results from JSON if available, otherwise estimate
   const coxPHResult = useMemo((): CoxPHResult | CoxPHResultFromJSON | null => {
-    if (coxPHResults) {
+    if (coxPHResults && !isAnnotationGrouping) {
       // Use the pre-computed results from R
       return coxPHResults;
     }
-    return estimateCoxPH(data, subtypeCounts);
-  }, [data, subtypeCounts, coxPHResults]);
+    return estimateCoxPH(effectiveData, effectiveCounts);
+  }, [effectiveData, effectiveCounts, coxPHResults, isAnnotationGrouping]);
 
   // Export survival statistics as CSV/TSV
   const exportSurvivalStats = (format: 'csv' | 'tsv') => {
@@ -171,7 +324,7 @@ export const SurvivalCurve = ({
   const medianSurvival = useMemo(() => {
     const result: Record<string, number | null> = {};
     
-    data.forEach(group => {
+    effectiveData.forEach(group => {
       // Sort time points
       const sorted = [...group.timePoints].sort((a, b) => a.time - b.time);
       
@@ -211,20 +364,20 @@ export const SurvivalCurve = ({
     });
     
     return result;
-  }, [data]);
+  }, [effectiveData]);
 
   // Transform data for chart - ensure monotonic survival and proper step function
   const { chartData, eventPoints, censorPoints, subtypes, maxTime, riskTableData } = useMemo(() => {
-    if (!data || data.length === 0) {
+    if (!effectiveData || effectiveData.length === 0) {
       return { chartData: [], eventPoints: [], censorPoints: [], subtypes: [], maxTime: 100, riskTableData: [] };
     }
     
-    const subtypeNames = data.map(d => d.subtype);
+    const subtypeNames = effectiveData.map(d => d.subtype);
     
     // Process each subtype - ensure monotonic decreasing survival
-    const processedData = data.map(group => {
+    const processedData = effectiveData.map(group => {
       const subtype = group.subtype;
-      const n = group.nTotal || subtypeCounts?.[subtype] || 100;
+      const n = group.nTotal || effectiveCounts?.[subtype] || 100;
       
       // Add initial point at time 0 with survival 1 if not present
       let points = [...group.timePoints];
@@ -387,7 +540,7 @@ export const SurvivalCurve = ({
       maxTime: maxT,
       riskTableData: riskTable
     };
-  }, [data, subtypeCounts]);
+  }, [effectiveData, effectiveCounts]);
 
   if (!data || data.length === 0) {
     return (
@@ -405,48 +558,68 @@ export const SurvivalCurve = ({
   }
 
   return (
-    <Card className="border-0 bg-card/50 backdrop-blur-sm">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <div className="flex items-center gap-3 flex-wrap">
-          <CardTitle className="text-lg">Kaplan-Meier Survival Curves</CardTitle>
-          {logRankResult && (
-            <TooltipProvider>
-              <UITooltip>
-                <TooltipTrigger asChild>
-                  <Badge 
-                    variant={logRankResult.pValue < 0.05 ? "default" : "secondary"}
-                    className={`cursor-help ${logRankResult.pValue < 0.05 ? "bg-green-600 hover:bg-green-700" : ""}`}
-                  >
-                    {isPrecomputedPValue ? <Database className="h-3 w-3 mr-1" /> : <Calculator className="h-3 w-3 mr-1" />}
-                    Log-rank: {formatPValue(logRankResult.pValue)}
-                  </Badge>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>{isPrecomputedPValue ? 'Pre-computed from R analysis' : 'Estimated from survival curves'}</p>
-                </TooltipContent>
-              </UITooltip>
-            </TooltipProvider>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => exportSurvivalStats('csv')}>
-            <FileSpreadsheet className="h-4 w-4 mr-1" />
-            CSV
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => exportSurvivalStats('tsv')}>
-            <FileSpreadsheet className="h-4 w-4 mr-1" />
-            TSV
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleDownloadPNG}>
-            <Download className="h-4 w-4 mr-1" />
-            PNG
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleDownloadSVG}>
-            <Download className="h-4 w-4 mr-1" />
-            SVG
-          </Button>
-        </div>
-      </CardHeader>
+    <div className="space-y-6">
+      <Card className="border-0 bg-card/50 backdrop-blur-sm">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            <CardTitle className="text-lg">Kaplan-Meier Survival Curves</CardTitle>
+            
+            {/* Group selector */}
+            {annotationColumns.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Group by:</span>
+                <Select value={groupBy} onValueChange={setGroupBy}>
+                  <SelectTrigger className="w-[150px] h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="nmf_subtype">NMF Subtype</SelectItem>
+                    {annotationColumns.map(col => (
+                      <SelectItem key={col} value={col}>{col}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            
+            {logRankResult && (
+              <TooltipProvider>
+                <UITooltip>
+                  <TooltipTrigger asChild>
+                    <Badge 
+                      variant={logRankResult.pValue < 0.05 ? "default" : "secondary"}
+                      className={`cursor-help ${logRankResult.pValue < 0.05 ? "bg-green-600 hover:bg-green-700" : ""}`}
+                    >
+                      {isPrecomputedPValue ? <Database className="h-3 w-3 mr-1" /> : <Calculator className="h-3 w-3 mr-1" />}
+                      Log-rank: {formatPValue(logRankResult.pValue)}
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{isPrecomputedPValue ? 'Pre-computed from R analysis' : 'Estimated from survival curves'}</p>
+                  </TooltipContent>
+                </UITooltip>
+              </TooltipProvider>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => exportSurvivalStats('csv')}>
+              <FileSpreadsheet className="h-4 w-4 mr-1" />
+              CSV
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => exportSurvivalStats('tsv')}>
+              <FileSpreadsheet className="h-4 w-4 mr-1" />
+              TSV
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleDownloadPNG}>
+              <Download className="h-4 w-4 mr-1" />
+              PNG
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleDownloadSVG}>
+              <Download className="h-4 w-4 mr-1" />
+              SVG
+            </Button>
+          </div>
+        </CardHeader>
       <CardContent>
         <div ref={chartRef} className="h-[420px] bg-card">
           <ResponsiveContainer width="100%" height="100%">
@@ -491,7 +664,7 @@ export const SurvivalCurve = ({
                 payload={subtypes.map(subtype => ({
                   value: `${subtype}${medianSurvival[subtype] !== null ? ` (median: ${medianSurvival[subtype]?.toFixed(1)}mo)` : ' (median: NR)'}`,
                   type: 'line' as const,
-                  color: subtypeColors[subtype] || "hsl(var(--primary))"
+                  color: effectiveColors[subtype] || "hsl(var(--primary))"
                 }))}
               />
               
@@ -511,7 +684,7 @@ export const SurvivalCurve = ({
                   <ReferenceLine
                     key={`median-line-${subtype}`}
                     x={median}
-                    stroke={subtypeColors[subtype] || "hsl(var(--primary))"}
+                    stroke={effectiveColors[subtype] || "hsl(var(--primary))"}
                     strokeDasharray="3 3"
                     strokeOpacity={0.4}
                   />
@@ -520,7 +693,7 @@ export const SurvivalCurve = ({
               
               {/* Confidence interval areas */}
               {subtypes.map((subtype) => {
-                const color = subtypeColors[subtype] || "hsl(var(--primary))";
+                const color = effectiveColors[subtype] || "hsl(var(--primary))";
                 return (
                   <Area
                     key={`${subtype}-ci`}
@@ -541,7 +714,7 @@ export const SurvivalCurve = ({
               
               {/* Lower CI bounds */}
               {subtypes.map((subtype) => {
-                const color = subtypeColors[subtype] || "hsl(var(--primary))";
+                const color = effectiveColors[subtype] || "hsl(var(--primary))";
                 return (
                   <Line
                     key={`${subtype}-lower`}
@@ -565,14 +738,14 @@ export const SurvivalCurve = ({
                   key={subtype}
                   type="stepAfter"
                   dataKey={subtype}
-                  stroke={subtypeColors[subtype] || "hsl(var(--primary))"}
+                  stroke={effectiveColors[subtype] || "hsl(var(--primary))"}
                   strokeWidth={2.5}
                   dot={(props) => {
                     const { cx, cy, payload } = props;
                     if (!payload || cx === undefined || cy === undefined) return null;
                     
                     const time = payload.time;
-                    const color = subtypeColors[subtype] || "hsl(var(--primary))";
+                    const color = effectiveColors[subtype] || "hsl(var(--primary))";
                     
                     // Check if this is an event point
                     const isEvent = eventPoints.some(
@@ -678,7 +851,7 @@ export const SurvivalCurve = ({
                       <div className="flex items-center gap-2">
                         <div 
                           className="w-3 h-3 rounded-full" 
-                          style={{ backgroundColor: subtypeColors[subtype] }}
+                          style={{ backgroundColor: effectiveColors[subtype] }}
                         />
                         <span className="font-medium">{subtype}</span>
                       </div>
@@ -706,7 +879,7 @@ export const SurvivalCurve = ({
               >
                 <div 
                   className="w-3 h-3 rounded-full" 
-                  style={{ backgroundColor: subtypeColors[subtype] }}
+                  style={{ backgroundColor: effectiveColors[subtype] }}
                 />
                 <span className="text-sm font-medium">{subtype}:</span>
                 <span className="text-sm text-muted-foreground">
@@ -745,7 +918,7 @@ export const SurvivalCurve = ({
                   <div key={g.subtype} className="flex flex-wrap items-center gap-2 text-sm">
                     <span 
                       className="font-medium"
-                      style={{ color: subtypeColors[g.subtype] }}
+                      style={{ color: effectiveColors[g.subtype] }}
                     >
                       {g.subtype}:
                     </span>
@@ -795,6 +968,18 @@ export const SurvivalCurve = ({
         </p>
       </CardContent>
     </Card>
+    
+    {/* Forest Plot */}
+    {coxPHResult && coxPHResult.groups.length > 0 && (
+      <ForestPlot
+        referenceGroup={coxPHResult.referenceGroup}
+        groups={coxPHResult.groups}
+        subtypeColors={effectiveColors}
+        isPrecomputed={isPrecomputedCoxPH}
+        title={isAnnotationGrouping ? `Forest Plot: ${groupBy}` : "Forest Plot: NMF Subtypes"}
+      />
+    )}
+  </div>
   );
 };
 
