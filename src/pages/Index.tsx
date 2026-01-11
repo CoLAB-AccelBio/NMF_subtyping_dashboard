@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import { SummaryCards } from "@/components/bioinformatics/SummaryCards";
 import { SubtypeDistribution } from "@/components/bioinformatics/SubtypeDistribution";
 import { ClusterScatter } from "@/components/bioinformatics/ClusterScatter";
@@ -11,6 +11,8 @@ import { CopheneticPlot } from "@/components/bioinformatics/CopheneticPlot";
 import { JsonUploader, NmfData } from "@/components/bioinformatics/JsonUploader";
 import { AnnotationUploader, AnnotationData } from "@/components/bioinformatics/AnnotationUploader";
 import { SurvivalCurve } from "@/components/bioinformatics/SurvivalCurve";
+import { ExportAllButton } from "@/components/bioinformatics/ExportAllButton";
+import { ChartRef } from "@/lib/chartExport";
 import { 
   nmfSummary as defaultSummary, 
   sampleResults as defaultSamples, 
@@ -38,9 +40,30 @@ const Index = () => {
   // Global filter reset key - increment to trigger reset in all components
   const [filterResetKey, setFilterResetKey] = useState(0);
 
+  // Chart refs for batch export
+  const summaryRef = useRef<HTMLDivElement>(null);
+  const subtypeDistRef = useRef<HTMLDivElement>(null);
+  const clusterScatterRef = useRef<HTMLDivElement>(null);
+  const pcaScatterRef = useRef<HTMLDivElement>(null);
+  const pcaScreeRef = useRef<HTMLDivElement>(null);
+  const heatmapRef = useRef<HTMLDivElement>(null);
+  const copheneticRef = useRef<HTMLDivElement>(null);
+  const survivalRef = useRef<HTMLDivElement>(null);
+
   const handleGlobalResetFilters = useCallback(() => {
     setFilterResetKey(prev => prev + 1);
   }, []);
+
+  const getChartRefs = useCallback((): ChartRef[] => [
+    { id: 'summary', name: 'summary-cards', ref: summaryRef.current, type: 'cards' },
+    { id: 'subtype', name: 'subtype-distribution', ref: subtypeDistRef.current, type: 'recharts' },
+    { id: 'cluster', name: 'umap-cluster', ref: clusterScatterRef.current, type: 'recharts' },
+    { id: 'pca', name: 'pca-scatter', ref: pcaScatterRef.current, type: 'recharts' },
+    { id: 'scree', name: 'pca-scree', ref: pcaScreeRef.current, type: 'recharts' },
+    { id: 'heatmap', name: 'expression-heatmap', ref: heatmapRef.current, type: 'heatmap', pngOptions: { paddingRight: 100, paddingBottom: 50 } },
+    { id: 'cophenetic', name: 'cophenetic-plot', ref: copheneticRef.current, type: 'recharts' },
+    { id: 'survival', name: 'survival-curve', ref: survivalRef.current, type: 'recharts' },
+  ], []);
 
   // Get sample IDs for validation
   const sampleIds = useMemo(() => data.samples.map(s => s.sample_id), [data.samples]);
@@ -74,10 +97,13 @@ const Index = () => {
                 <p className="text-sm text-muted-foreground">{data.summary.dataset} Molecular Subtypes</p>
               </div>
             </div>
-            <Button variant="outline" size="sm" onClick={handleGlobalResetFilters}>
-              <RotateCcw className="h-4 w-4 mr-1" />
-              Reset All Filters
-            </Button>
+            <div className="flex items-center gap-2">
+              <ExportAllButton getChartRefs={getChartRefs} />
+              <Button variant="outline" size="sm" onClick={handleGlobalResetFilters}>
+                <RotateCcw className="h-4 w-4 mr-1" />
+                Reset All Filters
+              </Button>
+            </div>
           </div>
         </div>
       </header>
@@ -93,35 +119,43 @@ const Index = () => {
               sampleIds={sampleIds}
             />
           </div>
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-3" ref={summaryRef}>
             <SummaryCards summary={data.summary} />
           </div>
         </div>
 
         {/* Charts Row 1 */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <SubtypeDistribution subtypeCounts={data.summary.subtype_counts} subtypeColors={subtypeColors} />
-          <ClusterScatter 
-            samples={data.samples} 
-            subtypeColors={subtypeColors} 
-            userAnnotations={userAnnotations}
-            filterResetKey={filterResetKey}
-          />
-          <div className="space-y-4">
-            <PCAScatter 
+          <div ref={subtypeDistRef}>
+            <SubtypeDistribution subtypeCounts={data.summary.subtype_counts} subtypeColors={subtypeColors} />
+          </div>
+          <div ref={clusterScatterRef}>
+            <ClusterScatter 
               samples={data.samples} 
               subtypeColors={subtypeColors} 
               userAnnotations={userAnnotations}
-              heatmapData={heatmapData}
               filterResetKey={filterResetKey}
             />
-            <PCAScreePlot heatmapData={heatmapData} samples={data.samples} />
+          </div>
+          <div className="space-y-4">
+            <div ref={pcaScatterRef}>
+              <PCAScatter 
+                samples={data.samples} 
+                subtypeColors={subtypeColors} 
+                userAnnotations={userAnnotations}
+                heatmapData={heatmapData}
+                filterResetKey={filterResetKey}
+              />
+            </div>
+            <div ref={pcaScreeRef}>
+              <PCAScreePlot heatmapData={heatmapData} samples={data.samples} />
+            </div>
           </div>
         </div>
 
         {/* Charts Row 2 */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-2" ref={heatmapRef}>
             <ExpressionHeatmap 
               data={heatmapData} 
               subtypeColors={subtypeColors} 
@@ -130,17 +164,21 @@ const Index = () => {
             />
           </div>
           <div className="space-y-6">
-            <CopheneticPlot 
-              rankMetrics={data.rankMetrics} 
-              optimalRank={data.summary.optimal_rank} 
-            />
+            <div ref={copheneticRef}>
+              <CopheneticPlot 
+                rankMetrics={data.rankMetrics} 
+                optimalRank={data.summary.optimal_rank} 
+              />
+            </div>
             <ClusteringMetrics samples={data.samples} />
           </div>
         </div>
 
         {/* Survival Analysis Row */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <SurvivalCurve data={data.survivalData || []} subtypeColors={subtypeColors} />
+          <div ref={survivalRef}>
+            <SurvivalCurve data={data.survivalData || []} subtypeColors={subtypeColors} />
+          </div>
         </div>
 
         {/* Marker Genes */}
