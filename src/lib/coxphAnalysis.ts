@@ -123,6 +123,32 @@ export interface ForwardSelectionResult {
   threshold: number;
 }
 
+export interface StepwiseSelectionResult {
+  steps: Array<{
+    step: number;
+    action: 'add' | 'remove';
+    covariate: string;
+    pValue: number;
+    selectedCovariates: string[];
+    modelAIC: number;
+    concordance?: number;
+  }>;
+  finalCovariates: string[];
+  addedCovariates: string[];
+  removedCovariates: string[];
+  threshold: number;
+  finalConcordance?: number;
+}
+
+export interface CrossValidationResult {
+  folds: number;
+  concordanceScores: number[];
+  meanConcordance: number;
+  stdConcordance: number;
+  ci95Lower: number;
+  ci95Upper: number;
+}
+
 /**
  * Estimate hazard ratio from survival curves using
  * the log-log transformation: HR ≈ log(S2) / log(S1) at a reference time
@@ -1145,5 +1171,399 @@ export function forwardSelection(
     finalCovariates: selectedCovariates,
     rejectedCovariates,
     threshold
+  };
+}
+
+/**
+ * Stepwise selection combining forward and backward steps
+ * Alternates between adding significant covariates and removing non-significant ones
+ */
+export function stepwiseSelection(
+  survivalData: SurvivalData[],
+  covariateData: Record<string, Record<string, string | number>>,
+  sampleSubtypes: Record<string, string>,
+  candidateCovariates: string[],
+  subtypeCounts?: Record<string, number>,
+  entryThreshold: number = 0.05,
+  removalThreshold: number = 0.10
+): StepwiseSelectionResult {
+  const steps: StepwiseSelectionResult['steps'] = [];
+  const selectedCovariates: string[] = [];
+  const addedCovariates: string[] = [];
+  const removedCovariates: string[] = [];
+  let remainingCandidates = [...candidateCovariates];
+  
+  let stepNumber = 1;
+  const maxIterations = candidateCovariates.length * 3; // Prevent infinite loops
+  let iteration = 0;
+  
+  while (iteration < maxIterations) {
+    iteration++;
+    let actionTaken = false;
+    
+    // FORWARD STEP: Try to add the best candidate
+    let bestCandidate: string | null = null;
+    let bestPValue = Infinity;
+    let bestModel: MultivariateCoxPHResult | null = null;
+    
+    for (const candidate of remainingCandidates) {
+      const testCovariates = [...selectedCovariates, candidate];
+      const testCovariateData: Record<string, Record<string, string | number>> = {};
+      
+      testCovariates.forEach(cov => {
+        if (covariateData[cov]) {
+          testCovariateData[cov] = covariateData[cov];
+        }
+      });
+      
+      const testModel = multivariateCoxPH(survivalData, testCovariateData, sampleSubtypes, subtypeCounts);
+      
+      if (testModel) {
+        const newCovResult = testModel.covariates.find(c => 
+          c.name === candidate || c.name.startsWith(candidate)
+        );
+        
+        if (newCovResult && newCovResult.pValue < bestPValue) {
+          bestPValue = newCovResult.pValue;
+          bestCandidate = candidate;
+          bestModel = testModel;
+        }
+      }
+    }
+    
+    // Add if significant
+    if (bestCandidate && bestPValue < entryThreshold && bestModel) {
+      selectedCovariates.push(bestCandidate);
+      addedCovariates.push(bestCandidate);
+      remainingCandidates = remainingCandidates.filter(c => c !== bestCandidate);
+      
+      const newAIC = bestModel.logLikelihood 
+        ? -2 * bestModel.logLikelihood + 2 * bestModel.covariates.length
+        : 0;
+      
+      steps.push({
+        step: stepNumber,
+        action: 'add',
+        covariate: bestCandidate,
+        pValue: bestPValue,
+        selectedCovariates: [...selectedCovariates],
+        modelAIC: newAIC,
+        concordance: bestModel.concordance
+      });
+      
+      stepNumber++;
+      actionTaken = true;
+    }
+    
+    // BACKWARD STEP: Check if any covariate should be removed
+    if (selectedCovariates.length >= 2) {
+      const currentCovariateData: Record<string, Record<string, string | number>> = {};
+      selectedCovariates.forEach(cov => {
+        if (covariateData[cov]) {
+          currentCovariateData[cov] = covariateData[cov];
+        }
+      });
+      
+      const currentModel = multivariateCoxPH(survivalData, currentCovariateData, sampleSubtypes, subtypeCounts);
+      
+      if (currentModel) {
+        // Find covariate with highest p-value
+        let maxPValue = 0;
+        let maxPValueCovariate: string | null = null;
+        
+        currentModel.covariates.forEach(cov => {
+          // Find the original covariate name
+          const originalName = selectedCovariates.find(sc => 
+            cov.name === sc || cov.name.startsWith(sc)
+          );
+          
+          if (originalName && cov.pValue > maxPValue) {
+            maxPValue = cov.pValue;
+            maxPValueCovariate = originalName;
+          }
+        });
+        
+        // Remove if above removal threshold (and not the one we just added)
+        if (maxPValueCovariate && maxPValue > removalThreshold && 
+            maxPValueCovariate !== bestCandidate) {
+          const indexToRemove = selectedCovariates.indexOf(maxPValueCovariate);
+          if (indexToRemove !== -1) {
+            selectedCovariates.splice(indexToRemove, 1);
+            removedCovariates.push(maxPValueCovariate);
+            remainingCandidates.push(maxPValueCovariate); // Can be re-added later
+            
+            // Recalculate model after removal
+            const reducedCovariateData: Record<string, Record<string, string | number>> = {};
+            selectedCovariates.forEach(cov => {
+              if (covariateData[cov]) {
+                reducedCovariateData[cov] = covariateData[cov];
+              }
+            });
+            
+            const reducedModel = multivariateCoxPH(survivalData, reducedCovariateData, sampleSubtypes, subtypeCounts);
+            const newAIC = reducedModel?.logLikelihood 
+              ? -2 * reducedModel.logLikelihood + 2 * reducedModel.covariates.length
+              : 0;
+            
+            steps.push({
+              step: stepNumber,
+              action: 'remove',
+              covariate: maxPValueCovariate,
+              pValue: maxPValue,
+              selectedCovariates: [...selectedCovariates],
+              modelAIC: newAIC,
+              concordance: reducedModel?.concordance
+            });
+            
+            stepNumber++;
+            actionTaken = true;
+          }
+        }
+      }
+    }
+    
+    // Stop if no action was taken in this iteration
+    if (!actionTaken) break;
+  }
+  
+  // Calculate final concordance
+  let finalConcordance: number | undefined;
+  if (selectedCovariates.length > 0) {
+    const finalCovariateData: Record<string, Record<string, string | number>> = {};
+    selectedCovariates.forEach(cov => {
+      if (covariateData[cov]) {
+        finalCovariateData[cov] = covariateData[cov];
+      }
+    });
+    const finalModel = multivariateCoxPH(survivalData, finalCovariateData, sampleSubtypes, subtypeCounts);
+    finalConcordance = finalModel?.concordance;
+  }
+  
+  return {
+    steps,
+    finalCovariates: selectedCovariates,
+    addedCovariates,
+    removedCovariates,
+    threshold: entryThreshold,
+    finalConcordance
+  };
+}
+
+/**
+ * K-fold cross-validation for Cox model to estimate out-of-sample concordance
+ * Uses stratified sampling by subtype to ensure balanced folds
+ */
+export function crossValidateConcordance(
+  survivalData: SurvivalData[],
+  covariateData: Record<string, Record<string, string | number>>,
+  sampleSubtypes: Record<string, string>,
+  covariateNames: string[],
+  subtypeCounts?: Record<string, number>,
+  folds: number = 5
+): CrossValidationResult {
+  // Get all sample IDs with complete data
+  const allSampleIds: string[] = [];
+  const firstCovariate = covariateNames[0];
+  if (firstCovariate && covariateData[firstCovariate]) {
+    Object.keys(covariateData[firstCovariate]).forEach(id => {
+      // Check if this sample has all covariates
+      const hasAllCovariates = covariateNames.every(cov => 
+        covariateData[cov]?.[id] !== undefined && covariateData[cov]?.[id] !== null
+      );
+      if (hasAllCovariates && sampleSubtypes[id]) {
+        allSampleIds.push(id);
+      }
+    });
+  }
+  
+  if (allSampleIds.length < folds * 2) {
+    // Not enough samples for cross-validation
+    return {
+      folds,
+      concordanceScores: [],
+      meanConcordance: 0.5,
+      stdConcordance: 0,
+      ci95Lower: 0.5,
+      ci95Upper: 0.5
+    };
+  }
+  
+  // Stratified split by subtype
+  const subtypeGroups: Record<string, string[]> = {};
+  allSampleIds.forEach(id => {
+    const subtype = sampleSubtypes[id];
+    if (!subtypeGroups[subtype]) {
+      subtypeGroups[subtype] = [];
+    }
+    subtypeGroups[subtype].push(id);
+  });
+  
+  // Shuffle each subtype group
+  Object.values(subtypeGroups).forEach(group => {
+    for (let i = group.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [group[i], group[j]] = [group[j], group[i]];
+    }
+  });
+  
+  // Create fold assignments
+  const foldAssignments: number[] = new Array(allSampleIds.length).fill(0);
+  const sampleToIndex: Record<string, number> = {};
+  allSampleIds.forEach((id, idx) => { sampleToIndex[id] = idx; });
+  
+  Object.values(subtypeGroups).forEach(group => {
+    group.forEach((id, idx) => {
+      foldAssignments[sampleToIndex[id]] = idx % folds;
+    });
+  });
+  
+  // Perform k-fold cross-validation
+  const concordanceScores: number[] = [];
+  
+  for (let fold = 0; fold < folds; fold++) {
+    // Split into train and test
+    const trainIds: string[] = [];
+    const testIds: string[] = [];
+    
+    allSampleIds.forEach((id, idx) => {
+      if (foldAssignments[idx] === fold) {
+        testIds.push(id);
+      } else {
+        trainIds.push(id);
+      }
+    });
+    
+    if (trainIds.length < 10 || testIds.length < 5) continue;
+    
+    // Build model on training data
+    const trainCovariateData: Record<string, Record<string, string | number>> = {};
+    covariateNames.forEach(cov => {
+      trainCovariateData[cov] = {};
+      trainIds.forEach(id => {
+        if (covariateData[cov]?.[id] !== undefined) {
+          trainCovariateData[cov][id] = covariateData[cov][id];
+        }
+      });
+    });
+    
+    const trainSampleSubtypes: Record<string, string> = {};
+    trainIds.forEach(id => { trainSampleSubtypes[id] = sampleSubtypes[id]; });
+    
+    const model = multivariateCoxPH(survivalData, trainCovariateData, trainSampleSubtypes, subtypeCounts);
+    
+    if (!model) continue;
+    
+    // Calculate concordance on test set
+    // Use the learned coefficients to predict risk scores
+    const testRiskScores: { id: string; riskScore: number; subtype: string }[] = [];
+    
+    testIds.forEach(id => {
+      let riskScore = 0;
+      
+      model.covariates.forEach(cov => {
+        // Find the original covariate name
+        const originalName = covariateNames.find(cn => 
+          cov.name === cn || cov.name.startsWith(cn)
+        );
+        
+        if (originalName) {
+          const value = covariateData[originalName]?.[id];
+          if (value !== undefined && value !== null) {
+            const numValue = typeof value === 'number' ? value : parseFloat(String(value));
+            if (!isNaN(numValue)) {
+              riskScore += cov.coefficient * numValue;
+            }
+          }
+        }
+      });
+      
+      testRiskScores.push({
+        id,
+        riskScore,
+        subtype: sampleSubtypes[id]
+      });
+    });
+    
+    // Get survival ranking
+    const subtypeMedianSurvival: Record<string, number> = {};
+    survivalData.forEach(group => {
+      const points = group.timePoints.sort((a, b) => a.time - b.time);
+      let median = points[points.length - 1]?.time || 0;
+      for (const p of points) {
+        if (p.survival <= 0.5) {
+          median = p.time;
+          break;
+        }
+      }
+      subtypeMedianSurvival[group.subtype] = median;
+    });
+    
+    // Calculate C-index on test set
+    let concordant = 0;
+    let discordant = 0;
+    let tied = 0;
+    
+    for (let i = 0; i < testRiskScores.length; i++) {
+      for (let j = i + 1; j < testRiskScores.length; j++) {
+        const a = testRiskScores[i];
+        const b = testRiskScores[j];
+        
+        const survA = subtypeMedianSurvival[a.subtype] || 0;
+        const survB = subtypeMedianSurvival[b.subtype] || 0;
+        
+        if (Math.abs(survA - survB) < 0.001) {
+          tied++;
+          continue;
+        }
+        
+        const riskDiff = a.riskScore - b.riskScore;
+        const survivalDiff = survA - survB;
+        
+        if (riskDiff === 0) {
+          tied++;
+        } else if ((riskDiff > 0 && survivalDiff < 0) || (riskDiff < 0 && survivalDiff > 0)) {
+          concordant++;
+        } else {
+          discordant++;
+        }
+      }
+    }
+    
+    const totalPairs = concordant + discordant + tied;
+    if (totalPairs > 0) {
+      const cIndex = (concordant + 0.5 * tied) / totalPairs;
+      concordanceScores.push(cIndex);
+    }
+  }
+  
+  if (concordanceScores.length === 0) {
+    return {
+      folds,
+      concordanceScores: [],
+      meanConcordance: 0.5,
+      stdConcordance: 0,
+      ci95Lower: 0.5,
+      ci95Upper: 0.5
+    };
+  }
+  
+  // Calculate mean and standard deviation
+  const mean = concordanceScores.reduce((a, b) => a + b, 0) / concordanceScores.length;
+  const variance = concordanceScores.reduce((sum, c) => sum + Math.pow(c - mean, 2), 0) / concordanceScores.length;
+  const std = Math.sqrt(variance);
+  
+  // 95% CI using t-distribution approximation
+  const se = std / Math.sqrt(concordanceScores.length);
+  const tValue = 2.776; // t(0.975, df=4) for 5 folds
+  const ci95Lower = Math.max(0, mean - tValue * se);
+  const ci95Upper = Math.min(1, mean + tValue * se);
+  
+  return {
+    folds,
+    concordanceScores,
+    meanConcordance: mean,
+    stdConcordance: std,
+    ci95Lower,
+    ci95Upper
   };
 }
