@@ -22,8 +22,10 @@ import {
   defaultRankMetrics,
   defaultSurvivalData,
 } from "@/data/mockNmfData";
-import { Dna, RotateCcw, RefreshCw } from "lucide-react";
+import { Dna, RotateCcw, RefreshCw, Minus, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 const Index = () => {
@@ -131,7 +133,47 @@ const Index = () => {
                 <p className="text-sm text-muted-foreground">Molecular Subtypes Analysis</p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              {/* Marker genes per subtype selector */}
+              <div className="flex items-center gap-2 border-r border-border pr-3">
+                <Label htmlFor="header-genes-per-subtype" className="text-xs text-muted-foreground whitespace-nowrap">
+                  Marker genes/subtype:
+                </Label>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setMarkerGenesPerSubtype(Math.max(markerGenesPerSubtype - 5, 5))}
+                    disabled={markerGenesPerSubtype <= 5}
+                  >
+                    <Minus className="h-3 w-3" />
+                  </Button>
+                  <Input
+                    id="header-genes-per-subtype"
+                    type="number"
+                    min={5}
+                    max={100}
+                    value={markerGenesPerSubtype}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value, 10);
+                      if (!isNaN(value)) {
+                        setMarkerGenesPerSubtype(Math.min(Math.max(value, 5), 100));
+                      }
+                    }}
+                    className="h-7 w-14 text-center text-sm"
+                  />
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setMarkerGenesPerSubtype(Math.min(markerGenesPerSubtype + 5, 100))}
+                    disabled={markerGenesPerSubtype >= 100}
+                  >
+                    <Plus className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
               <ThemeToggle />
               <ExportAllButton getChartRefs={getChartRefs} />
               <Button variant="outline" size="sm" onClick={handleGlobalResetFilters}>
@@ -206,6 +248,8 @@ const Index = () => {
             subtypeColors={subtypeColors} 
             userAnnotations={userAnnotations}
             filterResetKey={filterResetKey}
+            markerGenesPerSubtype={markerGenesPerSubtype}
+            markerGenes={data.markerGenes}
           />
         </div>
 
@@ -230,7 +274,6 @@ const Index = () => {
           genes={data.markerGenes} 
           subtypeColors={subtypeColors}
           genesPerSubtype={markerGenesPerSubtype}
-          onGenesPerSubtypeChange={setMarkerGenesPerSubtype}
         />
       </main>
 

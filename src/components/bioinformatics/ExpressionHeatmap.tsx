@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import React, { useMemo, useState, useRef, useCallback, forwardRef, useImperativeHandle } from "react";
 import { Download, RotateCcw } from "lucide-react";
 import { AnnotationSelector } from "./AnnotationSelector";
-import { generateSubtypeColors } from "@/data/mockNmfData";
+import { generateSubtypeColors, MarkerGene } from "@/data/mockNmfData";
 import { Dendrogram, DendrogramNode } from "./Dendrogram";
 import html2canvas from "html2canvas";
 
@@ -28,6 +28,8 @@ interface ExpressionHeatmapProps {
   subtypeColors: Record<string, string>;
   userAnnotations?: AnnotationData;
   filterResetKey?: number;
+  markerGenesPerSubtype?: number;
+  markerGenes?: MarkerGene[];
 }
 
 type ClusteringMethod = "none" | "average" | "complete" | "single" | "ward";
@@ -228,7 +230,7 @@ const transpose = (matrix: number[][]): number[][] => {
   return matrix[0].map((_, colIndex) => matrix.map(row => row[colIndex]));
 };
 
-export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeatmapProps>(({ data, subtypeColors, userAnnotations, filterResetKey }, ref) => {
+export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeatmapProps>(({ data, subtypeColors, userAnnotations, filterResetKey, markerGenesPerSubtype, markerGenes }, ref) => {
   const [hoveredCell, setHoveredCell] = useState<{ gene: string; sample: string; value: number; subtype: string; userAnnotation?: string } | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [useZScore, setUseZScore] = useState(false);
@@ -247,6 +249,45 @@ export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeat
       setExcludedAnnotationValues(new Set());
     }
   }, [filterResetKey]);
+
+  // Filter genes based on marker genes per subtype setting
+  const geneFilteredData = useMemo(() => {
+    if (!markerGenes || !markerGenesPerSubtype) {
+      return data;
+    }
+
+    // Get top marker genes per subtype
+    const subtypes = [...new Set(markerGenes.map(g => g.subtype))];
+    const topGeneNames = new Set<string>();
+    
+    subtypes.forEach(subtype => {
+      const subtypeGenes = markerGenes
+        .filter(g => g.subtype === subtype)
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, markerGenesPerSubtype);
+      subtypeGenes.forEach(g => topGeneNames.add(g.gene));
+    });
+
+    // Filter heatmap data to only include these genes
+    const geneIndices: number[] = [];
+    data.genes.forEach((gene, idx) => {
+      if (topGeneNames.has(gene)) {
+        geneIndices.push(idx);
+      }
+    });
+
+    // If no matching genes found, return original data
+    if (geneIndices.length === 0) {
+      return data;
+    }
+
+    return {
+      genes: geneIndices.map(i => data.genes[i]),
+      samples: data.samples,
+      sampleSubtypes: data.sampleSubtypes,
+      values: geneIndices.map(i => data.values[i]),
+    };
+  }, [data, markerGenes, markerGenesPerSubtype]);
 
   // Outer scroll container (for UI)
   const heatmapScrollRef = useRef<HTMLDivElement>(null);
@@ -291,30 +332,30 @@ export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeat
 
   // Filter samples based on exclusions
   const filteredData = useMemo(() => {
-    let includedIndices = data.samples.map((_, i) => i);
+    let includedIndices = geneFilteredData.samples.map((_, i) => i);
 
     // Filter by subtype exclusions
     if (excludedSubtypes.size > 0) {
-      includedIndices = includedIndices.filter(i => !excludedSubtypes.has(data.sampleSubtypes[i]));
+      includedIndices = includedIndices.filter(i => !excludedSubtypes.has(geneFilteredData.sampleSubtypes[i]));
     }
 
     // Filter by annotation exclusions
     if (selectedAnnotation && userAnnotations && excludedAnnotationValues.size > 0) {
       includedIndices = includedIndices.filter(i => {
-        const sampleId = data.samples[i];
+        const sampleId = geneFilteredData.samples[i];
         const annotValue = userAnnotations.annotations[sampleId]?.[selectedAnnotation];
         return !annotValue || !excludedAnnotationValues.has(annotValue);
       });
     }
 
     return {
-      samples: includedIndices.map(i => data.samples[i]),
-      sampleSubtypes: includedIndices.map(i => data.sampleSubtypes[i]),
-      values: data.values.map(row => includedIndices.map(i => row[i])),
-      genes: data.genes,
+      samples: includedIndices.map(i => geneFilteredData.samples[i]),
+      sampleSubtypes: includedIndices.map(i => geneFilteredData.sampleSubtypes[i]),
+      values: geneFilteredData.values.map(row => includedIndices.map(i => row[i])),
+      genes: geneFilteredData.genes,
       originalIndices: includedIndices,
     };
-  }, [data, excludedSubtypes, excludedAnnotationValues, selectedAnnotation, userAnnotations]);
+  }, [geneFilteredData, excludedSubtypes, excludedAnnotationValues, selectedAnnotation, userAnnotations]);
 
   const { displayValues, minVal, maxVal, sortedSampleIndices, sortedGeneIndices, uniqueSubtypes, sampleDendrogram, geneDendrogram } = useMemo(() => {
     const normalizedValues = useZScore ? zScoreNormalize(filteredData.values) : filteredData.values;
@@ -349,7 +390,7 @@ export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeat
       geneIndices = filteredData.genes.map((_, i) => i);
     }
 
-    const subtypes = [...new Set(data.sampleSubtypes)].sort(); // Use original data for all subtypes
+    const subtypes = [...new Set(geneFilteredData.sampleSubtypes)].sort(); // Use original data for all subtypes
 
     return {
       displayValues: normalizedValues,
@@ -361,7 +402,7 @@ export const ExpressionHeatmap = forwardRef<ExpressionHeatmapRef, ExpressionHeat
       sampleDendrogram: sampleTree,
       geneDendrogram: geneTree,
     };
-  }, [filteredData, data.sampleSubtypes, useZScore, sampleClusterMethod, geneClusterMethod, distanceMetric]);
+  }, [filteredData, geneFilteredData.sampleSubtypes, useZScore, sampleClusterMethod, geneClusterMethod, distanceMetric]);
 
   const cellWidth = Math.max(4, Math.min(10, 600 / filteredData.samples.length));
   const cellHeight = 12;
