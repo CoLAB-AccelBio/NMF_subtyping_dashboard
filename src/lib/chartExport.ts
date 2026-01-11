@@ -34,11 +34,27 @@ export const downloadChartAsPNG = async (
       windowWidth: element.scrollWidth + paddingRight,
       windowHeight: element.scrollHeight + paddingBottom,
       onclone: (clonedDoc) => {
-        const clonedElement = clonedDoc.body.querySelector('[data-heatmap-container]') || clonedDoc.body;
-        const textElements = clonedElement.querySelectorAll('*');
-        textElements.forEach((el) => {
+        // Ensure all text elements have proper styling for export
+        const allElements = clonedDoc.body.querySelectorAll('*');
+        allElements.forEach((el) => {
           if (el instanceof HTMLElement) {
-            el.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+            const computedStyle = window.getComputedStyle(el);
+            el.style.fontFamily = 'Arial, system-ui, sans-serif';
+            // Ensure text color is visible on white background
+            if (computedStyle.color === 'rgba(0, 0, 0, 0)' || !el.style.color) {
+              el.style.color = '#374151';
+            }
+          }
+        });
+        // Force SVG text elements to have visible fill
+        const svgTexts = clonedDoc.body.querySelectorAll('svg text, svg tspan');
+        svgTexts.forEach((el) => {
+          if (el instanceof SVGElement) {
+            const fill = el.getAttribute('fill');
+            if (!fill || fill === 'none' || fill === 'rgba(0, 0, 0, 0)') {
+              el.setAttribute('fill', '#374151');
+            }
+            el.setAttribute('font-family', 'Arial, sans-serif');
           }
         });
       }
@@ -79,11 +95,27 @@ export const getChartAsPNGBlob = async (
       windowWidth: element.scrollWidth + paddingRight,
       windowHeight: element.scrollHeight + paddingBottom,
       onclone: (clonedDoc) => {
-        const clonedElement = clonedDoc.body.querySelector('[data-heatmap-container]') || clonedDoc.body;
-        const textElements = clonedElement.querySelectorAll('*');
-        textElements.forEach((el) => {
+        // Ensure all text elements have proper styling for export
+        const allElements = clonedDoc.body.querySelectorAll('*');
+        allElements.forEach((el) => {
           if (el instanceof HTMLElement) {
-            el.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+            el.style.fontFamily = 'Arial, system-ui, sans-serif';
+            // Ensure text color is visible on white background
+            const computedColor = window.getComputedStyle(el).color;
+            if (computedColor === 'rgba(0, 0, 0, 0)') {
+              el.style.color = '#374151';
+            }
+          }
+        });
+        // Force SVG text elements to have visible fill
+        const svgTexts = clonedDoc.body.querySelectorAll('svg text, svg tspan');
+        svgTexts.forEach((el) => {
+          if (el instanceof SVGElement) {
+            const fill = el.getAttribute('fill');
+            if (!fill || fill === 'none' || fill === 'rgba(0, 0, 0, 0)') {
+              el.setAttribute('fill', '#374151');
+            }
+            el.setAttribute('font-family', 'Arial, sans-serif');
           }
         });
       }
@@ -187,6 +219,7 @@ const applyComputedStylesToSVG = (svgElement: SVGElement, originalSvg: SVGElemen
         const textAnchor = computedStyle?.textAnchor;
         const fill = computedStyle?.fill;
         const color = computedStyle?.color;
+        const dominantBaseline = computedStyle?.dominantBaseline;
         
         // Always set font-size with fallback
         el.setAttribute('font-size', fontSize && fontSize !== '0px' ? fontSize : '12px');
@@ -197,15 +230,22 @@ const applyComputedStylesToSVG = (svgElement: SVGElement, originalSvg: SVGElemen
         if (fontWeight && fontWeight !== 'normal' && fontWeight !== '400') {
           el.setAttribute('font-weight', fontWeight);
         }
-        if (textAnchor && textAnchor !== 'start') {
+        if (textAnchor) {
           el.setAttribute('text-anchor', textAnchor);
         }
+        if (dominantBaseline) {
+          el.setAttribute('dominant-baseline', dominantBaseline);
+        }
         
-        // Always ensure text has a visible fill color
-        if (fill && fill !== 'none' && fill !== '' && fill !== 'rgba(0, 0, 0, 0)') {
-          el.setAttribute('fill', fill);
-        } else if (color && color !== '' && color !== 'rgba(0, 0, 0, 0)') {
-          el.setAttribute('fill', color);
+        // Always ensure text has a visible fill color - check more aggressively
+        const effectiveFill = fill || '';
+        const effectiveColor = color || '';
+        const isTransparent = (c: string) => !c || c === 'none' || c === '' || c === 'rgba(0, 0, 0, 0)' || c === 'transparent';
+        
+        if (!isTransparent(effectiveFill)) {
+          el.setAttribute('fill', effectiveFill);
+        } else if (!isTransparent(effectiveColor)) {
+          el.setAttribute('fill', effectiveColor);
         } else {
           // Force a default visible color for all text
           el.setAttribute('fill', '#374151');
@@ -213,6 +253,55 @@ const applyComputedStylesToSVG = (svgElement: SVGElement, originalSvg: SVGElemen
       }
     }
   });
+};
+
+// Convert HTML element to SVG for cards/non-chart elements
+const convertHTMLToSVG = (element: HTMLElement): string => {
+  const rect = element.getBoundingClientRect();
+  const width = rect.width;
+  const height = rect.height;
+  
+  // Create SVG with foreignObject containing the HTML
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+  
+  // Add white background
+  const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  bgRect.setAttribute('width', '100%');
+  bgRect.setAttribute('height', '100%');
+  bgRect.setAttribute('fill', 'white');
+  svg.appendChild(bgRect);
+  
+  // Use foreignObject to embed HTML
+  const foreignObject = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+  foreignObject.setAttribute('width', String(width));
+  foreignObject.setAttribute('height', String(height));
+  
+  // Clone the element and inline critical styles
+  const clonedEl = element.cloneNode(true) as HTMLElement;
+  clonedEl.style.margin = '0';
+  clonedEl.style.fontFamily = 'Arial, sans-serif';
+  
+  // Inline all computed styles for text visibility
+  const allElements = clonedEl.querySelectorAll('*');
+  allElements.forEach((child) => {
+    if (child instanceof HTMLElement) {
+      const computed = window.getComputedStyle(child);
+      child.style.color = computed.color || '#374151';
+      child.style.backgroundColor = computed.backgroundColor;
+      child.style.fontFamily = 'Arial, sans-serif';
+      child.style.fontSize = computed.fontSize;
+      child.style.fontWeight = computed.fontWeight;
+    }
+  });
+  
+  foreignObject.appendChild(clonedEl);
+  svg.appendChild(foreignObject);
+  
+  const serializer = new XMLSerializer();
+  return serializer.serializeToString(svg);
 };
 
 // Returns SVG as string for ZIP export
@@ -223,11 +312,13 @@ export const getSVGAsString = (
   if (!containerElement) return null;
 
   // For heatmap, look for the custom SVG export button and trigger it programmatically
-  // Or find the heatmap canvas and convert it
   if (chartType === 'heatmap') {
-    // Heatmaps use a custom SVG generation - we'll return null here
-    // and handle it separately in exportAllAsZip
     return null;
+  }
+  
+  // For cards (HTML elements without SVG), use foreignObject approach
+  if (chartType === 'cards') {
+    return convertHTMLToSVG(containerElement);
   }
 
   // Find the chart SVG specifically - look for Recharts container or the largest SVG
