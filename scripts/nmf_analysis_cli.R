@@ -194,6 +194,9 @@ if (length(common_samples) == 0) {
 expr_data <- expr_data[, colnames(expr_data) %in% common_samples, drop = FALSE]
 samples_annot <- samples_annot[ rownames(samples_annot) %in% common_samples, ]
 
+# Sort to ensure alignment
+samples_annot <- samples_annot[ colnames(expr_data), ]
+
 cat("Data loaded successfully.\n\n")
 
 # ========== PREPROCESSING ==========
