@@ -2,7 +2,7 @@ name: Sync upstream
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # daily at 03:00 UTC
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 jobs:
@@ -14,9 +14,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Add upstream and sync
         run: |
-          git remote add upstream https://github.com/JMarzec/nmf_subtyping_dashboard.git
+          git remote add upstream https://github.com/JMarzec/nmf_subtyping_dashboard.git || true
           git fetch upstream
           git checkout main
           git merge upstream/main
