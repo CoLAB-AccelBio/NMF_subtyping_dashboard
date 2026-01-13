@@ -22,7 +22,7 @@ jobs:
 
       - name: Add upstream and sync
         run: |
-          git remote add upstream https://github.com/JMarzec/nmf_subtyping_dashboard.git || true
+          git remote add upstream https://github.com/JMarzec/NMF_subtyping_dashboard.git || true
           git fetch upstream
           git checkout main
           git merge upstream/main
